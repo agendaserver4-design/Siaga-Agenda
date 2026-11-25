@@ -1,0 +1,6 @@
+{
+  "name": "Agenda e-Buddy",
+  "description": "Aplikasi manajemen agenda harian & bulanan dengan deteksi bentrok otomatis, ekstraksi teks surat e-Buddy, dan ekspor kartu PNG untuk WhatsApp.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
