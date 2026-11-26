@@ -37,6 +37,7 @@ import {
   copyPosterToClipboard,
   downloadPosterFile,
   renderBroadcastPosterCanvas,
+  sharePosterWithImage,
 } from './posterCanvas';
 import {
   AUDIT_STORAGE_KEY,
@@ -1869,47 +1870,72 @@ export default function App() {
                       <span>Unduh Gambar WA (PNG)</span>
                     </button>
 
-                    <a
-                      href={`https://wa.me/?text=${encodeURIComponent(
-                        cardMode === 'tunggal' && focusedAgenda
-                          ? buildSingleAgendaText(focusedAgenda, orgTitle)
-                          : buildWhatsAppCaption(posterAgendas, selectedDate, orgTitle, showZoomUrl)
-                      )}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      onClick={() => {
-                        const caption =
-                          cardMode === 'tunggal' && focusedAgenda
-                            ? buildSingleAgendaText(focusedAgenda, orgTitle)
-                            : buildWhatsAppCaption(posterAgendas, selectedDate, orgTitle, showZoomUrl);
-                        navigator.clipboard?.writeText(caption);
-                        notify('Teks broadcast WhatsApp dibuka & disalin.', 'info');
-                      }}
-                      className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-[#16A34A] hover:bg-[#15803D] text-white text-sm font-bold shadow-xs"
-                    >
-                      <Share2 className="w-4 h-4" />
-                      <span>Share ke WhatsApp</span>
-                    </a>
-
                     <button
                       type="button"
                       onClick={async () => {
-                        const caption =
-                          cardMode === 'tunggal' && focusedAgenda
-                            ? buildSingleAgendaText(focusedAgenda, orgTitle)
-                            : buildWhatsAppCaption(posterAgendas, selectedDate, orgTitle, showZoomUrl);
-                        try {
-                          await navigator.clipboard.writeText(caption);
-                          notify('Teks agenda WhatsApp berhasil disalin!', 'success');
-                        } catch {
-                          notify('Gagal menyalin teks; silakan salin dari pratinjau teks.', 'warning');
+                        if (!posterCanvasRef.current) return;
+                        const res = await sharePosterWithImage(
+                          posterCanvasRef.current,
+                          `Agenda_BPBD_Sidoarjo_${selectedDate}`
+                        );
+                        if (res === 'shared') {
+                          notify('Poster gambar siap dikirim ke WhatsApp!', 'success');
+                        } else if (res === 'fallback') {
+                          notify(
+                            'Browser/preview membatasi share file langsung; gambar PNG diunduh agar siap dikirim ke WhatsApp.',
+                            'info'
+                          );
                         }
                       }}
-                      className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 text-sm font-bold shadow-xs transition"
+                      className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-[#16A34A] hover:bg-[#15803D] text-white text-sm font-bold shadow-xs cursor-pointer"
                     >
-                      <Copy className="w-4 h-4 text-emerald-700" />
-                      <span>Salin Teks Agenda (Copy Text)</span>
+                      <Share2 className="w-4 h-4" />
+                      <span>Share Gambar ke WhatsApp</span>
                     </button>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const caption =
+                            cardMode === 'tunggal' && focusedAgenda
+                              ? buildSingleAgendaText(focusedAgenda, orgTitle)
+                              : buildWhatsAppCaption(posterAgendas, selectedDate, orgTitle, showZoomUrl);
+                          try {
+                            await navigator.clipboard.writeText(caption);
+                            notify('Teks agenda WhatsApp berhasil disalin!', 'success');
+                          } catch {
+                            notify('Gagal menyalin teks; silakan salin dari pratinjau teks.', 'warning');
+                          }
+                        }}
+                        className="w-full inline-flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 text-xs font-bold shadow-xs transition cursor-pointer"
+                      >
+                        <Copy className="w-3.5 h-3.5 text-emerald-700" />
+                        <span>Salin Teks Agenda</span>
+                      </button>
+
+                      <a
+                        href={`https://wa.me/?text=${encodeURIComponent(
+                          cardMode === 'tunggal' && focusedAgenda
+                            ? buildSingleAgendaText(focusedAgenda, orgTitle)
+                            : buildWhatsAppCaption(posterAgendas, selectedDate, orgTitle, showZoomUrl)
+                        )}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        onClick={() => {
+                          const caption =
+                            cardMode === 'tunggal' && focusedAgenda
+                              ? buildSingleAgendaText(focusedAgenda, orgTitle)
+                              : buildWhatsAppCaption(posterAgendas, selectedDate, orgTitle, showZoomUrl);
+                          navigator.clipboard?.writeText(caption);
+                          notify('Membuka WhatsApp dengan teks agenda.', 'info');
+                        }}
+                        className="w-full inline-flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl border border-green-300 bg-green-50 hover:bg-green-100 text-green-900 text-xs font-bold shadow-xs transition"
+                      >
+                        <Share2 className="w-3.5 h-3.5 text-green-700" />
+                        <span>Kirim Teks (wa.me)</span>
+                      </a>
+                    </div>
                   </div>
 
                   {/* Preview Box Teks Agenda */}

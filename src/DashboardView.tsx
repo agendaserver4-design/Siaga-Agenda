@@ -735,16 +735,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </p>
           </div>
 
-          <div className="rounded-2xl bg-gradient-to-br from-[#0F766E] to-[#14B8A6] p-5 text-white shadow-sm flex flex-col justify-between">
+          <div className="rounded-2xl bg-gradient-to-br from-[#C2410C] via-[#EA580C] to-[#F97316] p-5 text-white shadow-sm flex flex-col justify-between">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <p className="text-[11px] font-bold uppercase tracking-wider text-teal-100">
+                <p className="text-[11px] font-bold uppercase tracking-wider text-orange-100">
                   TOTAL AGENDA BULAN INI
                 </p>
                 <p className="mt-2 text-3xl font-extrabold tabular-nums">
                   {monthActiveCount}
                 </p>
-                <p className="mt-1 text-xs font-medium text-teal-100">
+                <p className="mt-1 text-xs font-medium text-orange-100">
                   {activeMonthLabel}
                 </p>
               </div>
@@ -752,7 +752,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 <BarChart3 className="w-5 h-5 text-white" />
               </div>
             </div>
-            <p className="mt-4 pt-3 border-t border-white/15 text-xs text-teal-50">
+            <p className="mt-4 pt-3 border-t border-white/15 text-xs text-orange-50">
               {monthCompletedCount} selesai terlaksana sepanjang bulan berjalan.
             </p>
           </div>

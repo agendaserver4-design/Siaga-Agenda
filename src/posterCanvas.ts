@@ -1,4 +1,4 @@
-import headerHeroSrc from './assets/images/bpbd_header_hero_1795663073402.jpg';
+import headerHeroSrc from './assets/images/bpbd_header_jayandaru_v2_1795689517335.jpg';
 import actDamkarSrc from './assets/images/poster_act_damkar_1795663073443.jpg';
 import actLapanganSrc from './assets/images/poster_act_lapangan_sidoarjo_1795663106684.jpg';
 import actRapatSrc from './assets/images/poster_act_rapat_1795663074204.jpg';
@@ -819,13 +819,67 @@ export function downloadPosterFile(
 ) {
   const mime = format === 'jpeg' ? 'image/jpeg' : 'image/png';
   const ext = format === 'jpeg' ? 'jpg' : 'png';
-  const url = canvas.toDataURL(mime, 0.95);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `${filenameBase}.${ext}`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
+  const filename = `${filenameBase}.${ext}`;
+
+  const triggerLink = (href: string, revokeLater: boolean) => {
+    const a = document.createElement('a');
+    a.href = href;
+    a.download = filename;
+    a.rel = 'noopener';
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    if (revokeLater) {
+      setTimeout(() => URL.revokeObjectURL(href), 30000);
+    }
+  };
+
+  if (typeof canvas.toBlob === 'function') {
+    canvas.toBlob(
+      (blob) => {
+        if (blob) {
+          triggerLink(URL.createObjectURL(blob), true);
+        } else {
+          triggerLink(canvas.toDataURL(mime, 0.95), false);
+        }
+      },
+      mime,
+      0.95
+    );
+  } else {
+    triggerLink(canvas.toDataURL(mime, 0.95), false);
+  }
+}
+
+export async function sharePosterWithImage(
+  canvas: HTMLCanvasElement,
+  filenameBase: string
+): Promise<'shared' | 'aborted' | 'fallback'> {
+  const blob = await new Promise<Blob | null>((resolve) =>
+    canvas.toBlob((b) => resolve(b), 'image/png')
+  );
+
+  if (blob && typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
+    try {
+      const imageFile = new File([blob], `${filenameBase}.png`, { type: 'image/png' });
+      const canShareFiles =
+        typeof navigator.canShare !== 'function' || navigator.canShare({ files: [imageFile] });
+      if (canShareFiles) {
+        await navigator.share({
+          files: [imageFile],
+        });
+        return 'shared';
+      }
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        return 'aborted';
+      }
+    }
+  }
+
+  downloadPosterFile(canvas, filenameBase, 'png');
+  return 'fallback';
 }
 
 export async function copyPosterToClipboard(canvas: HTMLCanvasElement): Promise<boolean> {
@@ -848,14 +902,13 @@ export async function copyPosterToClipboard(canvas: HTMLCanvasElement): Promise<
 
 export function buildSingleAgendaText(item: AgendaItem, orgTitle = 'BPBD KAB. SIDOARJO'): string {
   const zoomLine = item.zoomUrl ? `\n🔗 Zoom: ${item.zoomUrl}` : '';
-  const suratLine = item.nomorSurat ? `\n📄 No. Surat: ${item.nomorSurat}` : '';
   return [
     `*AGENDA ${(orgTitle || 'BPBD KAB. SIDOARJO').toUpperCase()}*`,
     `📅 ${formatTanggalLengkap(item.tanggal)}`,
     `🕒 ${formatRentangWaktu(item)}`,
     `📌 *${item.judul}*`,
     `📍 ${item.lokasi}`,
-    `👤 PIC: ${item.pejabatPendamping || item.penyelenggara}${suratLine}${zoomLine}`,
+    `👤 PIC: ${item.pejabatPendamping || item.penyelenggara}${zoomLine}`,
     `\n_SIAP · CEPAT · TEPAT · HUMANIS_`,
   ].join('\n');
 }
