@@ -30,6 +30,20 @@ export type ActiveView =
 
 export type CardTheme = 'bpbd' | 'putih' | 'gelap';
 export type CardMode = 'harian' | 'tunggal' | 'bulanan';
+export type PosterIllustrationKey =
+  | 'auto'
+  | 'senam'
+  | 'apel'
+  | 'cuaca'
+  | 'hotel_fgd'
+  | 'rapat'
+  | 'k3_zoom'
+  | 'zoom'
+  | 'digital_ai'
+  | 'pesantren'
+  | 'sekolah_edukasi'
+  | 'damkar'
+  | 'kunjungan';
 
 export interface UserAccount {
   id: string;
@@ -89,6 +103,7 @@ export interface AgendaItem {
   isConfidential: boolean;
   isUpdated?: boolean;
   zoomUrl?: string;
+  ilustrasi?: PosterIllustrationKey;
   catatan: string;
   sumber: 'Manual' | 'e-Buddy';
   createdBy: string;
@@ -168,6 +183,25 @@ export const DISPOSISI_STATUSES: DisposisiStatus[] = [
   'Disetujui Pimpinan',
   'Diwakilkan',
   'Hadir Dikonfirmasi',
+];
+
+export const POSTER_ILLUSTRATION_OPTIONS: {
+  value: PosterIllustrationKey;
+  label: string;
+}[] = [
+  { value: 'auto', label: 'Otomatis (Sesuai Jenis Kegiatan)' },
+  { value: 'senam', label: 'Senam / Olahraga ASN' },
+  { value: 'apel', label: 'Apel / Gladi Kesiapsiagaan' },
+  { value: 'cuaca', label: 'Cuaca / Angin Kencang (Anemometer)' },
+  { value: 'hotel_fgd', label: 'FGD / Seminar Hotel' },
+  { value: 'rapat', label: 'Rapat Koordinasi / Pendopo' },
+  { value: 'k3_zoom', label: 'Pelatihan K3 / Zoom + APAR' },
+  { value: 'zoom', label: 'Zoom Meeting / Daring Pusdalops' },
+  { value: 'digital_ai', label: 'Pelatihan Digital / AI / Medsos' },
+  { value: 'pesantren', label: 'Simulasi Pesantren / Santri' },
+  { value: 'sekolah_edukasi', label: 'Edukasi Sekolah / Destana' },
+  { value: 'damkar', label: 'Damkar / Simulasi Pemadaman Api' },
+  { value: 'kunjungan', label: 'Kunjungan / Survei Lapangan' },
 ];
 
 export const HARI_ID = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];

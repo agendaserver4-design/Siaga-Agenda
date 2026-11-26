@@ -37,6 +37,7 @@ import {
   copyPosterToClipboard,
   downloadPosterFile,
   renderBroadcastPosterCanvas,
+  resolvePosterIllustrationKey,
   sharePosterWithImage,
 } from './posterCanvas';
 import {
@@ -56,6 +57,8 @@ import {
   MAX_FAILED_ATTEMPTS,
   MasterUnitItem,
   ORG_TITLE_KEY,
+  POSTER_ILLUSTRATION_OPTIONS,
+  PosterIllustrationKey,
   ROLE_META,
   RoleCode,
   SESSION_DURATION_MS,
@@ -106,6 +109,7 @@ interface AgendaFormState {
   isConfidential: boolean;
   isUpdated: boolean;
   zoomUrl: string;
+  ilustrasi: PosterIllustrationKey;
   catatan: string;
   sumber: 'Manual' | 'e-Buddy';
 }
@@ -552,6 +556,7 @@ export default function App() {
       isConfidential: Boolean(preset?.isConfidential),
       isUpdated: Boolean(preset?.isUpdated ?? true),
       zoomUrl: preset?.zoomUrl || '',
+      ilustrasi: preset?.ilustrasi || 'auto',
       catatan: preset?.catatan || '',
       sumber: preset?.sumber || 'Manual',
     });
@@ -581,6 +586,7 @@ export default function App() {
       isConfidential: item.isConfidential,
       isUpdated: Boolean(item.isUpdated),
       zoomUrl: item.zoomUrl || '',
+      ilustrasi: item.ilustrasi || 'auto',
       catatan: item.catatan,
       sumber: item.sumber,
     });
@@ -941,6 +947,9 @@ export default function App() {
       isConfidential: Boolean(raw.isConfidential),
       isUpdated: Boolean(raw.isUpdated),
       zoomUrl: raw.zoomUrl ? String(raw.zoomUrl) : undefined,
+      ilustrasi: POSTER_ILLUSTRATION_OPTIONS.some((o) => o.value === raw.ilustrasi)
+        ? (raw.ilustrasi as PosterIllustrationKey)
+        : undefined,
       catatan: String(raw.catatan || ''),
       sumber: raw.sumber === 'e-Buddy' ? 'e-Buddy' : 'Manual',
       createdBy: String(raw.createdBy || 'Import Backup'),
@@ -2082,6 +2091,68 @@ export default function App() {
                         className="w-full px-3 py-2 rounded-lg border border-slate-200 text-xs font-semibold"
                       />
                     </div>
+
+                    {showIllustration &&
+                      (cardMode === 'tunggal' && focusedAgenda
+                        ? [focusedAgenda]
+                        : posterAgendas
+                      ).length > 0 && (
+                        <div className="pt-2 border-t border-slate-100 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[11px] font-bold uppercase tracking-wider text-slate-600">
+                              Ilustrasi Sisi Kanan Per Baris
+                            </span>
+                            <span className="text-[10px] font-semibold text-emerald-700">
+                              Otomatis / Custom
+                            </span>
+                          </div>
+                          <div className="max-h-48 overflow-y-auto space-y-1.5 pr-1">
+                            {(cardMode === 'tunggal' && focusedAgenda
+                              ? [focusedAgenda]
+                              : posterAgendas
+                            ).map((item) => {
+                              const resolvedKey = resolvePosterIllustrationKey(item);
+                              const resolvedLabel =
+                                POSTER_ILLUSTRATION_OPTIONS.find((o) => o.value === resolvedKey)
+                                  ?.label || resolvedKey;
+                              return (
+                                <div
+                                  key={item.id}
+                                  className="rounded-lg border border-slate-200 bg-slate-50/70 p-2 space-y-1"
+                                >
+                                  <p className="text-[11px] font-semibold text-slate-800 truncate">
+                                    {item.jamMulai} · {item.judul}
+                                  </p>
+                                  <select
+                                    value={item.ilustrasi || 'auto'}
+                                    onChange={(e) => {
+                                      const nextVal = e.target.value as PosterIllustrationKey;
+                                      setAgendas((prev) =>
+                                        prev.map((a) =>
+                                          a.id === item.id ? { ...a, ilustrasi: nextVal } : a
+                                        )
+                                      );
+                                      if (focusedAgenda?.id === item.id) {
+                                        setFocusedAgenda({ ...focusedAgenda, ilustrasi: nextVal });
+                                      }
+                                    }}
+                                    className="w-full px-2 py-1 rounded border border-slate-200 bg-white text-[11px] font-medium text-slate-700"
+                                  >
+                                    <option value="auto">Otomatis ({resolvedLabel})</option>
+                                    {POSTER_ILLUSTRATION_OPTIONS.filter((o) => o.value !== 'auto').map(
+                                      (opt) => (
+                                        <option key={opt.value} value={opt.value}>
+                                          {opt.label}
+                                        </option>
+                                      )
+                                    )}
+                                  </select>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
                   </div>
                 </div>
 
@@ -2089,7 +2160,7 @@ export default function App() {
                 <div className="xl:col-span-7 rounded-2xl border border-slate-200 bg-white p-4 sm:p-5 shadow-sm space-y-3">
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-bold uppercase tracking-wider text-slate-500">
-                      Pratinjau Poster WhatsApp (Resolusi 1080px)
+                      Pratinjau Poster WhatsApp (Resolusi HD 2160px)
                     </span>
                     <span className="text-xs font-semibold text-slate-600">
                       {posterAgendas.length} kegiatan ditampilkan
@@ -2098,7 +2169,7 @@ export default function App() {
                   <div className="rounded-xl border border-slate-200 bg-slate-100 p-2 sm:p-3 overflow-auto">
                     <canvas
                       ref={posterCanvasRef}
-                      className="w-full max-w-[720px] mx-auto rounded-xl shadow-md block bg-white"
+                      className="w-full h-auto max-w-[720px] mx-auto rounded-xl shadow-md block bg-white"
                     />
                   </div>
                 </div>
@@ -2523,6 +2594,28 @@ export default function App() {
                     className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
                   />
                 </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Foto / Ilustrasi Poster WhatsApp
+                </label>
+                <select
+                  value={agendaForm.ilustrasi}
+                  onChange={(e) =>
+                    setAgendaForm({
+                      ...agendaForm,
+                      ilustrasi: e.target.value as PosterIllustrationKey,
+                    })
+                  }
+                  className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm bg-white"
+                >
+                  {POSTER_ILLUSTRATION_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
               </div>
 
               <div>
