@@ -8,6 +8,7 @@ import {
   Clipboard,
   ClipboardPaste,
   Copy,
+  Database,
   Download,
   Edit3,
   Eye,
@@ -25,6 +26,7 @@ import {
   ShieldCheck,
   Sparkles,
   Trash2,
+  Upload,
   UserPlus,
   X,
 } from 'lucide-react';
@@ -47,8 +49,6 @@ import {
   CATEGORIES,
   CardMode,
   CardTheme,
-  DISPOSISI_STATUSES,
-  DisposisiStatus,
   LOCKOUT_DURATION_MS,
   LOCKOUT_STORAGE_KEY,
   MASTER_STORAGE_KEY,
@@ -100,13 +100,33 @@ interface AgendaFormState {
   nomorSurat: string;
   kategori: AgendaCategory;
   status: AgendaStatus;
-  statusDisposisi: DisposisiStatus;
+  statusDisposisi: AgendaItem['statusDisposisi'];
   pejabatPendamping: string;
   isConfidential: boolean;
   isUpdated: boolean;
   zoomUrl: string;
   catatan: string;
   sumber: 'Manual' | 'e-Buddy';
+}
+
+interface BackupPayload {
+  app?: string;
+  version?: number;
+  exportedAt?: string;
+  orgTitle?: string;
+  agendas: AgendaItem[];
+  masterUnits?: MasterUnitItem[];
+  users?: UserAccount[];
+  auditLogs?: AuditLogEntry[];
+}
+
+interface ImportPreviewState {
+  fileName: string;
+  exportedAt?: string;
+  orgTitle?: string;
+  agendas: AgendaItem[];
+  masterUnits?: MasterUnitItem[];
+  users?: UserAccount[];
 }
 
 function safeParseJson<T>(raw: string | null, fallback: T): T {
@@ -246,10 +266,13 @@ export default function App() {
   const [agendaModalOpen, setAgendaModalOpen] = useState(false);
   const [agendaForm, setAgendaForm] = useState<AgendaFormState | null>(null);
 
-  const [disposisiTarget, setDisposisiTarget] = useState<AgendaItem | null>(null);
-  const [dispStatus, setDispStatus] = useState<DisposisiStatus>('Disetujui Pimpinan');
-  const [dispPendamping, setDispPendamping] = useState('');
-  const [dispCatatan, setDispCatatan] = useState('');
+  const [backupModalOpen, setBackupModalOpen] = useState(false);
+  const [importPreview, setImportPreview] = useState<ImportPreviewState | null>(null);
+  const [importIncludeUsers, setImportIncludeUsers] = useState(false);
+  const [importError, setImportError] = useState('');
+  const [showPasteBackup, setShowPasteBackup] = useState(false);
+  const [pasteBackupText, setPasteBackupText] = useState('');
+  const backupFileInputRef = useRef<HTMLInputElement | null>(null);
 
   const [masterModalOpen, setMasterModalOpen] = useState(false);
   const [masterForm, setMasterForm] = useState<MasterUnitItem>({
@@ -633,48 +656,6 @@ export default function App() {
     });
   };
 
-  const handleOpenDisposition = (item: AgendaItem) => {
-    setDisposisiTarget(item);
-    setDispStatus(item.statusDisposisi);
-    setDispPendamping(item.pejabatPendamping);
-    setDispCatatan(item.catatan);
-  };
-
-  const handleSaveDisposition = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!disposisiTarget) return;
-    setAgendas((prev) =>
-      prev.map((a) =>
-        a.id === disposisiTarget.id
-          ? {
-              ...a,
-              statusDisposisi: dispStatus,
-              pejabatPendamping: dispPendamping.trim(),
-              catatan: dispCatatan.trim(),
-              isUpdated: true,
-            }
-          : a
-      )
-    );
-    appendAudit(
-      'DISPOSISI_AGENDA',
-      'SUKSES',
-      `Disposisi "${disposisiTarget.judul}" -> ${dispStatus} (${dispPendamping || '-'}).`
-    );
-    notify('Disposisi surat berhasil diperbarui.', 'success');
-    setDisposisiTarget(null);
-  };
-
-  const handleConfirmPresence = (item: AgendaItem) => {
-    setAgendas((prev) =>
-      prev.map((a) =>
-        a.id === item.id ? { ...a, statusDisposisi: 'Hadir Dikonfirmasi' } : a
-      )
-    );
-    appendAudit('KONFIRMASI_HADIR', 'SUKSES', `Konfirmasi hadir untuk "${item.judul}".`);
-    notify('Kehadiran pada agenda berhasil dikonfirmasi.', 'success');
-  };
-
   const handleToggleStatus = (item: AgendaItem) => {
     const nextStatus: AgendaStatus = item.status === 'Selesai' ? 'Terjadwal' : 'Selesai';
     setAgendas((prev) =>
@@ -874,6 +855,296 @@ export default function App() {
   };
 
   // =========================================================================
+  // BACKUP & IMPORT DATA (.JSON) HANDLERS
+  // =========================================================================
+  const buildBackupPayloadString = () => {
+    const payload: BackupPayload = {
+      app: 'SIAGA-AGENDA-BPBD-SIDOARJO',
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      orgTitle,
+      agendas,
+      masterUnits,
+      users,
+      auditLogs,
+    };
+    return JSON.stringify(payload, null, 2);
+  };
+
+  const handleDownloadBackupJson = () => {
+    try {
+      const jsonString = buildBackupPayloadString();
+      const blob = new Blob([jsonString], { type: 'application/json;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `Backup_SIAGA_BPBD_${todayISO}.json`;
+      a.rel = 'noopener';
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 30000);
+      appendAudit(
+        'BACKUP_DATA',
+        'SUKSES',
+        `Mengunduh file backup JSON (${agendas.length} agenda, ${masterUnits.length} master unit).`
+      );
+      notify(`File backup (${agendas.length} agenda) berhasil diunduh.`, 'success');
+    } catch {
+      notify('Gagal membuat file backup JSON.', 'warning');
+    }
+  };
+
+  const handleCopyBackupJson = async () => {
+    try {
+      await navigator.clipboard?.writeText(buildBackupPayloadString());
+      notify(`Teks backup JSON (${agendas.length} agenda) disalin ke clipboard.`, 'success');
+    } catch {
+      notify('Browser membatasi salin clipboard; gunakan tombol Unduh File Backup (.json).', 'warning');
+    }
+  };
+
+  const normalizeImportedAgenda = (raw: Partial<AgendaItem>, index: number): AgendaItem | null => {
+    if (!raw || typeof raw !== 'object') return null;
+    const judul = String(raw.judul || '').trim();
+    const tanggal = String(raw.tanggal || '').trim();
+    if (!judul || !/^\d{4}-\d{2}-\d{2}$/.test(tanggal)) return null;
+    const validStatuses: AgendaStatus[] = ['Terjadwal', 'Draft', 'Selesai', 'Dibatalkan'];
+    const validCategories: AgendaCategory[] = [...CATEGORIES];
+    const jamMulai = /^\d{2}:\d{2}$/.test(String(raw.jamMulai || ''))
+      ? String(raw.jamMulai)
+      : '08:00';
+    const jamSelesai = /^\d{2}:\d{2}$/.test(String(raw.jamSelesai || ''))
+      ? String(raw.jamSelesai)
+      : '10:00';
+    return {
+      id: String(raw.id || `ag-imp-${Date.now()}-${index}`),
+      judul,
+      tanggal,
+      jamMulai,
+      jamSelesai,
+      sampaiSelesai: Boolean(raw.sampaiSelesai),
+      lokasi: String(raw.lokasi || 'Menunggu konfirmasi'),
+      penyelenggara: String(raw.penyelenggara || 'Sekretariat BPBD'),
+      pakaian: String(raw.pakaian || 'Menyesuaikan'),
+      nomorSurat: String(raw.nomorSurat || ''),
+      kategori: validCategories.includes(raw.kategori as AgendaCategory)
+        ? (raw.kategori as AgendaCategory)
+        : 'Rapat Internal',
+      status: validStatuses.includes(raw.status as AgendaStatus)
+        ? (raw.status as AgendaStatus)
+        : 'Terjadwal',
+      statusDisposisi: raw.statusDisposisi || 'Menunggu Disposisi',
+      pejabatPendamping: String(raw.pejabatPendamping || ''),
+      isConfidential: Boolean(raw.isConfidential),
+      isUpdated: Boolean(raw.isUpdated),
+      zoomUrl: raw.zoomUrl ? String(raw.zoomUrl) : undefined,
+      catatan: String(raw.catatan || ''),
+      sumber: raw.sumber === 'e-Buddy' ? 'e-Buddy' : 'Manual',
+      createdBy: String(raw.createdBy || 'Import Backup'),
+      createdAt: String(raw.createdAt || new Date().toISOString()),
+    };
+  };
+
+  const readFileTextCompat = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      try {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const result = typeof reader.result === 'string' ? reader.result : '';
+          if (result) {
+            resolve(result);
+          } else if (typeof file.text === 'function') {
+            file.text().then(resolve).catch(reject);
+          } else {
+            reject(new Error('Isi file kosong.'));
+          }
+        };
+        reader.onerror = () => {
+          if (typeof file.text === 'function') {
+            file.text().then(resolve).catch(() => reject(reader.error || new Error('Gagal membaca file.')));
+          } else {
+            reject(reader.error || new Error('Gagal membaca file.'));
+          }
+        };
+        reader.readAsText(file, 'utf-8');
+      } catch (err) {
+        if (typeof file.text === 'function') {
+          file.text().then(resolve).catch(() => reject(err));
+        } else {
+          reject(err);
+        }
+      }
+    });
+  };
+
+  const parseBackupJsonAndPreview = (rawText: string, sourceName: string) => {
+    const cleanedText = rawText.replace(/^\uFEFF/, '').trim();
+    if (!cleanedText) {
+      setImportError('File atau teks backup kosong.');
+      return;
+    }
+
+    const parsed = JSON.parse(cleanedText) as unknown;
+    let rawAgendas: Partial<AgendaItem>[] = [];
+    let rawMaster: MasterUnitItem[] | undefined;
+    let rawUsers: UserAccount[] | undefined;
+    let exportedAt: string | undefined;
+    let parsedOrgTitle: string | undefined;
+
+    if (Array.isArray(parsed)) {
+      rawAgendas = parsed as Partial<AgendaItem>[];
+    } else if (parsed && typeof parsed === 'object') {
+      const obj = parsed as Partial<BackupPayload>;
+      if (Array.isArray(obj.agendas)) {
+        rawAgendas = obj.agendas;
+      }
+      if (Array.isArray(obj.masterUnits)) {
+        rawMaster = obj.masterUnits.filter(
+          (m) => m && typeof m.id === 'string' && typeof m.nama === 'string'
+        );
+      }
+      if (Array.isArray(obj.users)) {
+        rawUsers = obj.users.filter(
+          (u) => u && typeof u.id === 'string' && typeof u.username === 'string'
+        );
+      }
+      if (typeof obj.exportedAt === 'string') exportedAt = obj.exportedAt;
+      if (typeof obj.orgTitle === 'string' && obj.orgTitle.trim()) {
+        parsedOrgTitle = obj.orgTitle.trim();
+      }
+    }
+
+    const cleanAgendas = rawAgendas
+      .map((item, idx) => normalizeImportedAgenda(item, idx))
+      .filter((x): x is AgendaItem => x !== null);
+
+    if (cleanAgendas.length === 0 && (!rawMaster || rawMaster.length === 0)) {
+      setImportError(
+        'File JSON tidak berisi data agenda atau master unit yang valid. Pastikan Anda memilih file backup SIAGA (.json).'
+      );
+      return;
+    }
+
+    setImportIncludeUsers(Boolean(perms.canManageUsers && rawUsers && rawUsers.length > 0));
+    setImportPreview({
+      fileName: sourceName,
+      exportedAt,
+      orgTitle: parsedOrgTitle,
+      agendas: cleanAgendas,
+      masterUnits: rawMaster,
+      users: rawUsers,
+    });
+  };
+
+  const handleSelectBackupFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const inputEl = e.currentTarget;
+    const file = inputEl.files?.[0];
+    setImportError('');
+    setImportPreview(null);
+    if (!file) {
+      inputEl.value = '';
+      return;
+    }
+
+    try {
+      // Read file BEFORE resetting inputEl.value so Android Chrome content:// URIs stay valid
+      const text = await readFileTextCompat(file);
+      parseBackupJsonAndPreview(text, file.name);
+    } catch {
+      setImportError(
+        'File gagal dibaca dari penyimpanan perangkat. Coba pilih ulang file .json atau gunakan opsi "Tempel Teks JSON" di bawah.'
+      );
+    } finally {
+      inputEl.value = '';
+    }
+  };
+
+  const handleParsePastedBackup = () => {
+    setImportError('');
+    setImportPreview(null);
+    try {
+      parseBackupJsonAndPreview(pasteBackupText, 'Teks Backup JSON');
+    } catch {
+      setImportError('Teks JSON tidak valid. Pastikan seluruh isi file backup tersalin utuh.');
+    }
+  };
+
+  const handleApplyImport = (mode: 'merge' | 'replace') => {
+    if (!importPreview) return;
+
+    if (mode === 'replace') {
+      setAgendas(importPreview.agendas);
+      if (importPreview.masterUnits && importPreview.masterUnits.length > 0) {
+        setMasterUnits(importPreview.masterUnits);
+      }
+      if (importPreview.orgTitle) {
+        setOrgTitle(importPreview.orgTitle);
+      }
+      if (
+        perms.canManageUsers &&
+        importIncludeUsers &&
+        importPreview.users &&
+        importPreview.users.length > 0
+      ) {
+        setUsers(importPreview.users);
+      }
+      appendAudit(
+        'IMPORT_RESTORE_PENUH',
+        'PERINGATAN',
+        `Memulihkan penuh data dari "${importPreview.fileName}" (${importPreview.agendas.length} agenda).`
+      );
+      notify(
+        `Berhasil memulihkan ${importPreview.agendas.length} agenda dari file backup.`,
+        'success'
+      );
+    } else {
+      let addedCount = 0;
+      setAgendas((prev) => {
+        const existingIds = new Set(prev.map((a) => a.id));
+        const newItems = importPreview.agendas.filter((a) => !existingIds.has(a.id));
+        addedCount = newItems.length;
+        return [...newItems, ...prev];
+      });
+      if (importPreview.masterUnits && importPreview.masterUnits.length > 0) {
+        setMasterUnits((prev) => {
+          const existingIds = new Set(prev.map((m) => m.id));
+          const newUnits = importPreview.masterUnits!.filter((m) => !existingIds.has(m.id));
+          return [...newUnits, ...prev];
+        });
+      }
+      if (
+        perms.canManageUsers &&
+        importIncludeUsers &&
+        importPreview.users &&
+        importPreview.users.length > 0
+      ) {
+        setUsers((prev) => {
+          const existingIds = new Set(prev.map((u) => u.id));
+          const newUsers = importPreview.users!.filter((u) => !existingIds.has(u.id));
+          return [...prev, ...newUsers];
+        });
+      }
+      appendAudit(
+        'IMPORT_GABUNG_DATA',
+        'SUKSES',
+        `Menggabungkan data dari "${importPreview.fileName}" (${importPreview.agendas.length} item diproses, ${addedCount} agenda baru ditambahkan).`
+      );
+      notify(
+        addedCount > 0
+          ? `Berhasil menggabungkan ${addedCount} agenda baru dari backup.`
+          : 'Semua data dari file backup sudah tersedia di perangkat ini.',
+        'success'
+      );
+    }
+
+    setImportPreview(null);
+    setImportError('');
+    setBackupModalOpen(false);
+  };
+
+  // =========================================================================
   // LOGIN GATE RENDER (Smart ASN Sidoarjo Inspired + Dual Logos + Hidden Demo)
   // =========================================================================
   if (!currentUser) {
@@ -930,7 +1201,7 @@ export default function App() {
               <h1 className="text-3xl sm:text-4xl lg:text-[42px] font-extrabold leading-[1.15] tracking-tight">
                 Akselerasi Layanan{' '}
                 <span className="bg-gradient-to-r from-emerald-300 via-teal-200 to-amber-300 bg-clip-text text-transparent">
-                  Agenda &amp; Disposisi
+                  Agenda Kegiatan
                 </span>{' '}
                 BPBD Sidoarjo
               </h1>
@@ -1268,8 +1539,8 @@ export default function App() {
           </nav>
         </div>
 
-        {/* Sidebar Bottom User Footer + Logout */}
-        <div className="p-4 border-t border-emerald-400/15 space-y-3 bg-[#021B13]">
+        {/* Sidebar Bottom User Footer + Backup/Import + Logout */}
+        <div className="p-4 border-t border-emerald-400/15 space-y-2.5 bg-[#021B13]">
           <div className="space-y-0.5 min-w-0">
             <p className="text-sm font-bold text-white truncate">{currentUser.namaLengkap}</p>
             <p className="text-xs font-medium text-emerald-300 truncate">
@@ -1279,6 +1550,19 @@ export default function App() {
               NIP {currentUser.nip}
             </p>
           </div>
+          <button
+            type="button"
+            onClick={() => {
+              setMobileMenuOpen(false);
+              setImportError('');
+              setImportPreview(null);
+              setBackupModalOpen(true);
+            }}
+            className="w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl bg-emerald-600/25 hover:bg-emerald-600/40 border border-emerald-400/30 text-xs font-bold text-emerald-100 transition cursor-pointer"
+          >
+            <Database className="w-4 h-4 text-emerald-300" />
+            <span>Backup &amp; Import Data</span>
+          </button>
           <button
             type="button"
             onClick={handleLogout}
@@ -1292,7 +1576,7 @@ export default function App() {
 
       {/* Main Content Area */}
       <div className="flex-1 min-w-0 flex flex-col">
-        {/* Top Sticky Header (Input Agenda removed, subtle click-triggered simultaneous reminder icon added) */}
+        {/* Top Sticky Header */}
         <header className="sticky top-0 z-30 bg-white/95 backdrop-blur border-b border-emerald-100 px-4 sm:px-6 h-16 flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
             <button
@@ -1312,6 +1596,19 @@ export default function App() {
             <span className="hidden sm:inline-block text-xs font-bold text-emerald-700 whitespace-nowrap">
               {ROLE_META[currentUser.roleKode].shortLabel}
             </span>
+            <button
+              type="button"
+              onClick={() => {
+                setImportError('');
+                setImportPreview(null);
+                setBackupModalOpen(true);
+              }}
+              title="Backup & Import Data Agenda (.json)"
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 text-xs font-bold text-emerald-800 transition cursor-pointer"
+            >
+              <Database className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Backup / Import</span>
+            </button>
             {simultaneousDayItems.length > 0 && (
               <button
                 type="button"
@@ -1350,9 +1647,7 @@ export default function App() {
               onOpenNewAgenda={openNewAgendaModal}
               onOpenEditAgenda={openEditAgendaModal}
               onRequestDeleteAgenda={handleRequestDeleteAgenda}
-              onOpenDisposition={handleOpenDisposition}
               onToggleStatus={handleToggleStatus}
-              onConfirmPresence={handleConfirmPresence}
               onOpenSinglePoster={(item) => {
                 setFocusedAgenda(item);
                 setCardMode('tunggal');
@@ -1415,13 +1710,13 @@ export default function App() {
 
                   <div className="space-y-2">
                     <label className="block text-xs font-semibold text-slate-700">
-                      Tempel teks undangan, disposisi e-Buddy, atau pesan WhatsApp
+                      Tempel teks undangan, e-Buddy, atau pesan WhatsApp
                     </label>
                     <textarea
                       rows={8}
                       value={ebuddyRawText}
                       onChange={(e) => handleRunEBuddyExtract(e.target.value)}
-                      placeholder={`Contoh format:\nNomor Surat: 005/2194/438.1.1/2026\nPerihal: Rapat Koordinasi Hidrometeorologi\nHari/Tanggal: Senin, 23 November 2026\nPukul: 08.00 - 10.30 WIB\nTempat: Ruang Rapat Setda Kab. Sidoarjo\nDisposisi: Kalaksa menugaskan Bid. KL`}
+                      placeholder={`Contoh format:\nPerihal: Rapat Koordinasi Hidrometeorologi\nHari/Tanggal: Senin, 23 November 2026\nPukul: 08.00 - 10.30 WIB\nTempat: Ruang Rapat Setda Kab. Sidoarjo\nBidang: Bid. KL`}
                       className="w-full rounded-xl border border-slate-300 bg-white p-3.5 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-600/30 focus:border-emerald-700"
                     />
                   </div>
@@ -1481,9 +1776,9 @@ export default function App() {
                           <p className="font-bold text-slate-900 mt-0.5">{ebuddyPreview.lokasi}</p>
                         </div>
                         <div className="rounded-lg bg-slate-50 p-2.5">
-                          <span className="text-slate-500">No. Surat / Disposisi:</span>
+                          <span className="text-slate-500">Bidang / Penyelenggara:</span>
                           <p className="font-bold text-slate-900 mt-0.5">
-                            {ebuddyPreview.nomorSurat || '-'} · {ebuddyPreview.penyelenggara}
+                            {ebuddyPreview.penyelenggara}
                           </p>
                         </div>
                       </div>
@@ -2144,29 +2439,18 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">
-                    PIC / Pejabat Pendamping
-                  </label>
-                  <input
-                    type="text"
-                    value={agendaForm.pejabatPendamping}
-                    onChange={(e) =>
-                      setAgendaForm({ ...agendaForm, pejabatPendamping: e.target.value })
-                    }
-                    className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">Nomor Surat</label>
-                  <input
-                    type="text"
-                    value={agendaForm.nomorSurat}
-                    onChange={(e) => setAgendaForm({ ...agendaForm, nomorSurat: e.target.value })}
-                    className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm font-mono"
-                  />
-                </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  PIC / Pejabat Pendamping
+                </label>
+                <input
+                  type="text"
+                  value={agendaForm.pejabatPendamping}
+                  onChange={(e) =>
+                    setAgendaForm({ ...agendaForm, pejabatPendamping: e.target.value })
+                  }
+                  className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
+                />
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -2261,7 +2545,7 @@ export default function App() {
                   />
                   <span className="inline-flex items-center gap-1">
                     <Lock className="w-3.5 h-3.5 text-slate-500" />
-                    Agenda Sifat Terbatas (Khusus Pimpinan/Disposisi/Super Admin)
+                    Agenda Sifat Terbatas (Khusus Pimpinan/Super Admin)
                   </span>
                 </label>
               </div>
@@ -2279,82 +2563,6 @@ export default function App() {
                   className="px-5 py-2 rounded-xl bg-[#064E3B] hover:bg-[#065F46] text-white text-xs font-bold"
                 >
                   Simpan Agenda
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* MODAL: DISPOSISI SURAT */}
-      {disposisiTarget && (
-        <div className="fixed inset-0 z-50 bg-slate-900/55 flex items-center justify-center p-4">
-          <div className="w-full max-w-md rounded-2xl bg-white shadow-xl border border-slate-200 overflow-hidden">
-            <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
-              <h3 className="text-base font-bold text-slate-900">Disposisi &amp; Penugasan</h3>
-              <button
-                type="button"
-                onClick={() => setDisposisiTarget(null)}
-                className="p-1 rounded-lg text-slate-400 hover:bg-slate-100"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <form onSubmit={handleSaveDisposition} className="p-5 space-y-4">
-              <p className="text-xs font-semibold text-slate-700 bg-slate-50 p-3 rounded-xl">
-                {disposisiTarget.judul}
-              </p>
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Status Disposisi
-                </label>
-                <select
-                  value={dispStatus}
-                  onChange={(e) => setDispStatus(e.target.value as DisposisiStatus)}
-                  className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm bg-white"
-                >
-                  {DISPOSISI_STATUSES.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Pejabat / Personel Pendamping (PIC)
-                </label>
-                <input
-                  type="text"
-                  value={dispPendamping}
-                  onChange={(e) => setDispPendamping(e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Arahan / Catatan Disposisi
-                </label>
-                <textarea
-                  rows={3}
-                  value={dispCatatan}
-                  onChange={(e) => setDispCatatan(e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
-                />
-              </div>
-              <div className="flex justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setDisposisiTarget(null)}
-                  className="px-4 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-700"
-                >
-                  Batal
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 rounded-xl bg-[#064E3B] hover:bg-[#065F46] text-white text-xs font-bold"
-                >
-                  Simpan Disposisi
                 </button>
               </div>
             </form>
@@ -2637,16 +2845,6 @@ export default function App() {
                       </div>
                       {perms.canEditAgenda && (
                         <div className="flex flex-wrap items-center gap-2 pt-1.5">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setReminderPopupOpen(false);
-                              handleOpenDisposition(item);
-                            }}
-                            className="px-2.5 py-1.5 rounded-lg border border-emerald-200 bg-white hover:bg-emerald-50 text-[11px] font-bold text-emerald-800"
-                          >
-                            Atur PIC / Disposisi
-                          </button>
                           {nextSlot && (
                             <button
                               type="button"
@@ -2705,6 +2903,227 @@ export default function App() {
               >
                 Tutup Pengingat
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: BACKUP & IMPORT DATA (.JSON) */}
+      {backupModalOpen && (
+        <div
+          className="fixed inset-0 z-[70] bg-slate-900/60 flex items-center justify-center p-3 sm:p-4"
+          onClick={() => setBackupModalOpen(false)}
+        >
+          <div
+            className="w-full max-w-lg max-h-[84vh] rounded-2xl bg-white shadow-2xl border border-emerald-200 flex flex-col overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="shrink-0 px-5 py-4 bg-gradient-to-r from-[#03241A] via-[#064E3B] to-[#047857] text-white flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="w-9 h-9 rounded-xl bg-white/15 flex items-center justify-center shrink-0">
+                  <Database className="w-5 h-5 text-emerald-200" />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="text-base font-extrabold truncate">Backup &amp; Import Data</h3>
+                  <p className="text-[11px] text-emerald-100 truncate">
+                    Simpan cadangan atau pulihkan jadwal saat pembaruan aplikasi
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setBackupModalOpen(false)}
+                className="p-1.5 rounded-lg text-emerald-100 hover:bg-white/10 hover:text-white shrink-0"
+                aria-label="Tutup backup dan import"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4">
+              {/* Current Data Summary */}
+              <div className="grid grid-cols-3 gap-2.5 text-center">
+                <div className="rounded-xl border border-emerald-100 bg-emerald-50/50 p-3">
+                  <p className="text-[11px] font-semibold text-slate-500">Total Agenda</p>
+                  <p className="text-lg font-extrabold text-emerald-800 tabular-nums">
+                    {agendas.length}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-emerald-100 bg-emerald-50/50 p-3">
+                  <p className="text-[11px] font-semibold text-slate-500">Master Unit</p>
+                  <p className="text-lg font-extrabold text-emerald-800 tabular-nums">
+                    {masterUnits.length}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-emerald-100 bg-emerald-50/50 p-3">
+                  <p className="text-[11px] font-semibold text-slate-500">Akun ASN</p>
+                  <p className="text-lg font-extrabold text-emerald-800 tabular-nums">
+                    {users.length}
+                  </p>
+                </div>
+              </div>
+
+              {/* Section 1: Export / Backup */}
+              <div className="rounded-2xl border border-emerald-200 bg-emerald-50/35 p-4 space-y-3">
+                <div className="space-y-1">
+                  <h4 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
+                    <Download className="w-4 h-4 text-emerald-700" />
+                    1. Backup Data Sekarang (.json)
+                  </h4>
+                  <p className="text-xs text-slate-600 leading-relaxed">
+                    Unduh seluruh data agenda, master unit/lokasi, dan pengaturan dalam satu file cadangan (.json) sebelum melakukan update atau pindah perangkat.
+                  </p>
+                </div>
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <button
+                    type="button"
+                    onClick={handleDownloadBackupJson}
+                    className="flex-1 py-2.5 px-4 rounded-xl bg-[#064E3B] hover:bg-[#065F46] text-white text-xs font-bold flex items-center justify-center gap-2 shadow-xs transition cursor-pointer"
+                  >
+                    <Download className="w-4 h-4" />
+                    <span>Unduh File Backup (.json)</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleCopyBackupJson}
+                    className="py-2.5 px-3.5 rounded-xl border border-emerald-300 bg-white hover:bg-emerald-50 text-emerald-800 text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    <span>Salin JSON</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Section 2: Import / Restore */}
+              <div className="rounded-2xl border border-slate-200 bg-slate-50/60 p-4 space-y-3">
+                <div className="space-y-1">
+                  <h4 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
+                    <Upload className="w-4 h-4 text-teal-700" />
+                    2. Import / Pulihkan Data (.json)
+                  </h4>
+                  <p className="text-xs text-slate-600 leading-relaxed">
+                    Pilih file backup <code className="font-mono text-[11px] bg-white px-1 rounded border border-slate-200">.json</code> yang pernah diunduh untuk mengembalikan atau menggabungkan jadwal.
+                  </p>
+                </div>
+
+                <input
+                  ref={backupFileInputRef}
+                  type="file"
+                  accept=".json,application/json,text/plain"
+                  onChange={handleSelectBackupFile}
+                  className="hidden"
+                />
+
+                <button
+                  type="button"
+                  onClick={() => backupFileInputRef.current?.click()}
+                  className="w-full py-2.5 px-4 rounded-xl border border-teal-300 bg-white hover:bg-teal-50 text-teal-900 text-xs font-bold flex items-center justify-center gap-2 transition cursor-pointer"
+                >
+                  <Upload className="w-4 h-4 text-teal-700" />
+                  <span>Pilih File Backup (.json) dari Perangkat</span>
+                </button>
+
+                <div className="text-center">
+                  <button
+                    type="button"
+                    onClick={() => setShowPasteBackup((v) => !v)}
+                    className="text-[11px] font-bold text-teal-700 hover:underline cursor-pointer"
+                  >
+                    {showPasteBackup
+                      ? 'Sembunyikan input tempel teks JSON'
+                      : 'Atau tempel teks isi file backup JSON langsung'}
+                  </button>
+                </div>
+
+                {showPasteBackup && (
+                  <div className="space-y-2 rounded-xl border border-slate-200 bg-white p-3">
+                    <textarea
+                      rows={4}
+                      value={pasteBackupText}
+                      onChange={(e) => setPasteBackupText(e.target.value)}
+                      placeholder='Tempel seluruh isi JSON backup di sini (diawali dengan { "app": "SIAGA-AGENDA-BPBD-SIDOARJO" ... })'
+                      className="w-full rounded-lg border border-slate-300 p-2 text-xs font-mono text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-600/30"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleParsePastedBackup}
+                      disabled={!pasteBackupText.trim()}
+                      className="w-full py-2 px-3 rounded-lg bg-teal-700 hover:bg-teal-800 disabled:opacity-50 text-white text-xs font-bold cursor-pointer"
+                    >
+                      Baca &amp; Pratinjau Teks JSON
+                    </button>
+                  </div>
+                )}
+
+                {importError && (
+                  <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2.5 text-xs font-semibold text-rose-700 flex items-start gap-2">
+                    <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                    <span>{importError}</span>
+                  </div>
+                )}
+
+                {importPreview && (
+                  <div className="rounded-xl border border-emerald-200 bg-white p-3.5 space-y-3">
+                    <div className="space-y-1">
+                      <p className="text-xs font-extrabold text-emerald-900 truncate">
+                        File siap dipulihkan: {importPreview.fileName}
+                      </p>
+                      {importPreview.exportedAt && (
+                        <p className="text-[11px] text-slate-500">
+                          Dibuat pada:{' '}
+                          {new Date(importPreview.exportedAt).toLocaleString('id-ID')}
+                        </p>
+                      )}
+                      <div className="flex flex-wrap gap-2 pt-1 text-[11px] font-bold">
+                        <span className="px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 border border-emerald-200">
+                          {importPreview.agendas.length} Agenda
+                        </span>
+                        {importPreview.masterUnits && (
+                          <span className="px-2 py-0.5 rounded bg-teal-50 text-teal-800 border border-teal-200">
+                            {importPreview.masterUnits.length} Master Unit
+                          </span>
+                        )}
+                        {importPreview.users && (
+                          <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200">
+                            {importPreview.users.length} Akun ASN
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {perms.canManageUsers &&
+                      importPreview.users &&
+                      importPreview.users.length > 0 && (
+                        <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            checked={importIncludeUsers}
+                            onChange={(e) => setImportIncludeUsers(e.target.checked)}
+                            className="w-4 h-4 rounded border-slate-300 text-emerald-700"
+                          />
+                          <span>Sertakan data Akun ASN dari file backup</span>
+                        </label>
+                      )}
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => handleApplyImport('merge')}
+                        className="py-2 px-3 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold cursor-pointer"
+                      >
+                        Gabungkan (Aman)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleApplyImport('replace')}
+                        className="py-2 px-3 rounded-xl border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-900 text-xs font-bold cursor-pointer"
+                      >
+                        Pulihkan Penuh (Timpa)
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>

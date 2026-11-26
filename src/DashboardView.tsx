@@ -6,7 +6,6 @@ import {
   BarChart3,
   Building2,
   Calendar,
-  CheckCircle2,
   ChevronLeft,
   ChevronRight,
   Clock,
@@ -20,9 +19,7 @@ import {
   MapPin,
   Plus,
   Search,
-  Sparkles,
   Trash2,
-  UserCheck,
   Users,
   Video,
   X,
@@ -61,9 +58,7 @@ interface DashboardViewProps {
   onOpenNewAgenda: (preset?: Partial<AgendaItem>) => void;
   onOpenEditAgenda: (item: AgendaItem) => void;
   onRequestDeleteAgenda: (item: AgendaItem) => void;
-  onOpenDisposition: (item: AgendaItem) => void;
   onToggleStatus: (item: AgendaItem) => void;
-  onConfirmPresence: (item: AgendaItem) => void;
   onOpenSinglePoster: (item: AgendaItem) => void;
   onOpenMasterModal: (unit?: MasterUnitItem) => void;
   onRequestDeleteMaster: (unit: MasterUnitItem) => void;
@@ -84,19 +79,6 @@ function statusColorClass(status: AgendaStatus) {
       return 'bg-amber-50 text-amber-800 border-amber-200';
     case 'Dibatalkan':
       return 'bg-rose-50 text-rose-700 border-rose-200';
-  }
-}
-
-function disposisiColorClass(status: AgendaItem['statusDisposisi']) {
-  switch (status) {
-    case 'Hadir Dikonfirmasi':
-      return 'bg-emerald-50 text-emerald-700 border-emerald-200';
-    case 'Disetujui Pimpinan':
-      return 'bg-blue-50 text-blue-700 border-blue-200';
-    case 'Diwakilkan':
-      return 'bg-indigo-50 text-indigo-700 border-indigo-200';
-    default:
-      return 'bg-amber-50 text-amber-700 border-amber-200';
   }
 }
 
@@ -215,9 +197,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onOpenNewAgenda,
   onOpenEditAgenda,
   onRequestDeleteAgenda,
-  onOpenDisposition,
   onToggleStatus,
-  onConfirmPresence,
   onOpenSinglePoster,
   onOpenMasterModal,
   onRequestDeleteMaster,
@@ -240,7 +220,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [rekapPicFilter, setRekapPicFilter] = useState('Semua');
   const [rekapStatusFilter, setRekapStatusFilter] = useState<'Semua' | AgendaStatus>('Semua');
   const [rekapCatFilter, setRekapCatFilter] = useState<'Semua' | AgendaCategory>('Semua');
-  const [includeDisposisiInReport, setIncludeDisposisiInReport] = useState(true);
 
   // Master Unit search/filter
   const [masterSearch, setMasterSearch] = useState('');
@@ -282,24 +261,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     [dayAgendasAll]
   );
 
-  const dayConfirmedCount = useMemo(
-    () =>
-      dayActiveAgendas.filter(
-        (a) =>
-          a.statusDisposisi === 'Disetujui Pimpinan' ||
-          a.statusDisposisi === 'Hadir Dikonfirmasi'
-      ).length,
-    [dayActiveAgendas]
-  );
-
-  const dayPendingDisposisiCount = useMemo(
-    () =>
-      dayActiveAgendas.filter(
-        (a) => a.statusDisposisi === 'Menunggu Disposisi' || Boolean(a.isUpdated)
-      ).length,
-    [dayActiveAgendas]
-  );
-
   const monthActiveCount = useMemo(
     () => monthAgendas.filter((a) => a.status !== 'Dibatalkan').length,
     [monthAgendas]
@@ -310,14 +271,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     [monthAgendas]
   );
 
-  const monthPendingCount = useMemo(
-    () =>
-      monthAgendas.filter(
-        (a) => a.status !== 'Dibatalkan' && a.statusDisposisi === 'Menunggu Disposisi'
-      ).length,
-    [monthAgendas]
-  );
-
   // 7-day activity chart around selectedDate
   const sevenDaySeries = useMemo(() => {
     return Array.from({ length: 7 }, (_, i) => {
@@ -325,18 +278,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       const [y, m, d] = iso.split('-').map(Number);
       const dt = new Date(y, m - 1, d);
       const items = visibleAgendas.filter((a) => a.tanggal === iso && a.status !== 'Dibatalkan');
-      const confirmed = items.filter(
-        (a) =>
-          a.status === 'Selesai' ||
-          a.statusDisposisi === 'Hadir Dikonfirmasi' ||
-          a.statusDisposisi === 'Disetujui Pimpinan'
-      ).length;
+      const completed = items.filter((a) => a.status === 'Selesai').length;
       return {
         iso,
         label: `${String(d).padStart(2, '0')} ${BULAN_ID[m - 1].slice(0, 3)}`,
         hari: HARI_ID[dt.getDay()].slice(0, 3),
         total: items.length,
-        confirmed,
+        completed,
       };
     });
   }, [visibleAgendas, selectedDate]);
@@ -366,7 +314,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       if (filterCat !== 'Semua' && item.kategori !== filterCat) return false;
       if (filterStatus !== 'Semua' && item.status !== filterStatus) return false;
       if (q) {
-        const hay = `${item.judul} ${item.lokasi} ${item.penyelenggara} ${item.pejabatPendamping} ${item.nomorSurat}`.toLowerCase();
+        const hay = `${item.judul} ${item.lokasi} ${item.penyelenggara} ${item.pejabatPendamping}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
@@ -512,7 +460,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         'Bidang / Penyelenggara',
         'PIC / Pendamping',
         'Status',
-        ...(includeDisposisiInReport ? ['Nomor Surat', 'Status Disposisi'] : []),
       ];
 
       const dataRows = rekapFiltered.map((item, idx) => [
@@ -525,7 +472,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         item.penyelenggara,
         item.pejabatPendamping || '-',
         item.status,
-        ...(includeDisposisiInReport ? [item.nomorSurat || '-', item.statusDisposisi] : []),
       ]);
 
       const sheetData: (string | number)[][] = [
@@ -550,7 +496,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         { wch: 26 },
         { wch: 24 },
         { wch: 14 },
-        ...(includeDisposisiInReport ? [{ wch: 24 }, { wch: 22 }] : []),
       ];
 
       const wb = XLSX.utils.book_new();
@@ -639,7 +584,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         'Bidang',
         'PIC / Pendamping',
         'Status',
-        ...(includeDisposisiInReport ? ['No. Surat', 'Disposisi'] : []),
       ];
 
       const bodyRows =
@@ -654,7 +598,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 '-',
                 '-',
                 '-',
-                ...(includeDisposisiInReport ? ['-', '-'] : []),
               ],
             ]
           : rekapFiltered.map((item, idx) => [
@@ -666,9 +609,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               item.penyelenggara,
               item.pejabatPendamping || '-',
               item.status,
-              ...(includeDisposisiInReport
-                ? [item.nomorSurat || '-', item.statusDisposisi]
-                : []),
             ]);
 
       autoTable(doc, {
@@ -735,10 +675,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 <span>Monitoring {activeMonthLabel} · BPBD Kab. Sidoarjo</span>
               </div>
               <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">
-                Ringkasan eksekutif agenda kegiatan, disposisi e-Buddy, dan rekap harian.
+                Ringkasan eksekutif agenda kegiatan, ekstraksi e-Buddy, dan rekap harian.
               </h2>
               <p className="text-sm text-slate-600 leading-relaxed max-w-2xl">
-                Dashboard terpadu untuk memantau agenda harian pimpinan dan bidang, mengelola disposisi surat masuk, serta menyiapkan laporan resmi dan kartu broadcast WhatsApp.
+                Dashboard terpadu untuk memantau agenda harian pimpinan dan bidang, serta menyiapkan laporan resmi dan kartu broadcast WhatsApp.
               </p>
             </div>
 
@@ -755,10 +695,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   {monthCompletedCount} Kegiatan
                 </p>
               </div>
-              <div className="rounded-xl border border-amber-100 bg-amber-50/40 p-3.5">
-                <p className="text-xs font-medium text-slate-500">Disposisi Pending</p>
-                <p className="mt-1 text-sm font-bold text-amber-700 tabular-nums">
-                  {monthPendingCount} Surat
+              <div className="rounded-xl border border-emerald-100 bg-emerald-50/40 p-3.5">
+                <p className="text-xs font-medium text-slate-500">Agenda Hari Ini</p>
+                <p className="mt-1 text-sm font-bold text-emerald-800 tabular-nums">
+                  {dayActiveAgendas.length} Kegiatan
                 </p>
               </div>
               <div className="rounded-xl border border-teal-100 bg-teal-50/40 p-3.5">
@@ -771,8 +711,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
         </section>
 
-        {/* 4 Vibrant Emerald-Harmonized KPI Cards */}
-        <section className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+        {/* 2 Vibrant Emerald-Harmonized KPI Cards */}
+        <section className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div className="rounded-2xl bg-gradient-to-br from-[#043927] to-[#065F46] p-5 text-white shadow-sm flex flex-col justify-between">
             <div className="flex items-start justify-between gap-3">
               <div>
@@ -792,50 +732,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
             <p className="mt-4 pt-3 border-t border-white/15 text-xs text-emerald-50/90">
               Akumulasi jadwal aktif non-batal pada tanggal terpilih.
-            </p>
-          </div>
-
-          <div className="rounded-2xl bg-gradient-to-br from-[#047857] to-[#10B981] p-5 text-white shadow-sm flex flex-col justify-between">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="text-[11px] font-bold uppercase tracking-wider text-emerald-100">
-                  DISETUJUI &amp; DIKONFIRMASI
-                </p>
-                <p className="mt-2 text-3xl font-extrabold tabular-nums">
-                  {dayConfirmedCount}
-                </p>
-                <p className="mt-1 text-xs font-medium text-emerald-50">
-                  Siap jalan / Hadir terverifikasi
-                </p>
-              </div>
-              <div className="w-10 h-10 rounded-xl bg-white/15 flex items-center justify-center shrink-0">
-                <CheckCircle2 className="w-5 h-5 text-white" />
-              </div>
-            </div>
-            <p className="mt-4 pt-3 border-t border-white/15 text-xs text-emerald-50">
-              Disposisi pimpinan dan kehadiran pejabat sudah terkonfirmasi.
-            </p>
-          </div>
-
-          <div className="rounded-2xl bg-gradient-to-br from-amber-600 to-amber-500 p-5 text-white shadow-sm flex flex-col justify-between">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="text-[11px] font-bold uppercase tracking-wider text-amber-100">
-                  PERLU DISPOSISI / UPDATE
-                </p>
-                <p className="mt-2 text-3xl font-extrabold tabular-nums">
-                  {dayPendingDisposisiCount}
-                </p>
-                <p className="mt-1 text-xs font-medium text-amber-100">
-                  Menunggu arahan / baru diperbarui
-                </p>
-              </div>
-              <div className="w-10 h-10 rounded-xl bg-white/15 flex items-center justify-center shrink-0">
-                <Sparkles className="w-5 h-5 text-white" />
-              </div>
-            </div>
-            <p className="mt-4 pt-3 border-t border-white/15 text-xs text-amber-50">
-              Perlu diinfokan ke pejabat pendamping &amp; grup WA pegawai.
             </p>
           </div>
 
@@ -872,7 +768,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   Aktivitas Agenda 7 Hari Sekitar Tanggal Terpilih
                 </h3>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Perbandingan total jadwal aktif dan agenda terkonfirmasi per hari.
+                  Perbandingan total jadwal aktif dan agenda selesai per hari.
                 </p>
               </div>
               <div className="flex items-center gap-4 text-xs font-medium text-slate-600">
@@ -882,7 +778,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </span>
                 <span className="inline-flex items-center gap-1.5">
                   <span className="w-2.5 h-2.5 rounded-sm bg-emerald-400 inline-block" />
-                  Terkonfirmasi
+                  Selesai
                 </span>
               </div>
             </div>
@@ -891,7 +787,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               {sevenDaySeries.map((point) => {
                 const isSelected = point.iso === selectedDate;
                 const totalPct = Math.round((point.total / maxChartVal) * 100);
-                const confPct = Math.round((point.confirmed / maxChartVal) * 100);
+                const compPct = Math.round((point.completed / maxChartVal) * 100);
                 return (
                   <button
                     key={point.iso}
@@ -911,7 +807,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       />
                       <div
                         className="w-4 rounded-t-md bg-emerald-400 transition-all"
-                        style={{ height: `${Math.max(point.confirmed > 0 ? 12 : 4, confPct)}%` }}
+                        style={{ height: `${Math.max(point.completed > 0 ? 12 : 4, compPct)}%` }}
                       />
                     </div>
                   </button>
@@ -1042,7 +938,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Cari kegiatan, lokasi, nomor surat, atau PIC..."
+                placeholder="Cari kegiatan, lokasi, bidang, atau PIC..."
                 className="w-full pl-9 pr-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-700"
               />
             </div>
@@ -1193,13 +1089,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   >
                     Status: {activeDetailAgenda.status}
                   </span>
-                  <span
-                    className={`inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-semibold ${disposisiColorClass(
-                      activeDetailAgenda.statusDisposisi
-                    )}`}
-                  >
-                    {activeDetailAgenda.statusDisposisi}
-                  </span>
                   {activeDetailAgenda.isUpdated && (
                     <span className="inline-flex items-center rounded-md bg-emerald-600 text-white px-2 py-0.5 text-[10px] font-bold">
                       UPDATE / BARU
@@ -1241,13 +1130,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       <span>{activeDetailAgenda.pejabatPendamping || '-'}</span>
                     </p>
                   </div>
-                  <div className="rounded-xl bg-slate-50 border border-slate-100 p-3">
-                    <p className="text-slate-500 font-medium">Nomor Surat</p>
-                    <p className="font-mono font-bold text-slate-900 mt-0.5">
-                      {activeDetailAgenda.nomorSurat || '-'}
-                    </p>
-                  </div>
-                  <div className="rounded-xl bg-slate-50 border border-slate-100 p-3">
+                  <div className="rounded-xl bg-slate-50 border border-slate-100 p-3 sm:col-span-2">
                     <p className="text-slate-500 font-medium">Pakaian / Seragam</p>
                     <p className="font-bold text-slate-900 mt-0.5">
                       {activeDetailAgenda.pakaian || '-'}
@@ -1323,30 +1206,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       Edit
                     </button>
                   )}
-                  {perms.canEditDisposition && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setDetailAgendaId(null);
-                        onOpenDisposition(activeDetailAgenda);
-                      }}
-                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-indigo-200 bg-indigo-50 hover:bg-indigo-100 text-xs font-bold text-indigo-800"
-                    >
-                      <UserCheck className="w-3.5 h-3.5" />
-                      Disposisi
-                    </button>
-                  )}
-                  {perms.canConfirmPresence &&
-                    activeDetailAgenda.statusDisposisi !== 'Hadir Dikonfirmasi' && (
-                      <button
-                        type="button"
-                        onClick={() => onConfirmPresence(activeDetailAgenda)}
-                        className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 text-xs font-bold text-emerald-800"
-                      >
-                        <CheckCircle2 className="w-3.5 h-3.5" />
-                        Konfirmasi Hadir
-                      </button>
-                    )}
                   {perms.canEditAgenda && activeDetailAgenda.status !== 'Dibatalkan' && (
                     <button
                       type="button"
@@ -1607,11 +1466,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                                     {formatRentangWaktu(item)}
                                   </span>
                                   <span
-                                    className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold bg-white ${disposisiColorClass(
-                                      item.statusDisposisi
+                                    className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${statusColorClass(
+                                      item.status
                                     )}`}
                                   >
-                                    {item.statusDisposisi}
+                                    {item.status}
                                   </span>
                                 </div>
                                 <p className="text-xs font-extrabold text-slate-900 line-clamp-2">
@@ -1631,15 +1490,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                                       className="px-2 py-1 rounded-md bg-white border border-slate-200 hover:bg-slate-50 text-[11px] font-semibold text-slate-700"
                                     >
                                       Edit
-                                    </button>
-                                  )}
-                                  {perms.canEditDisposition && (
-                                    <button
-                                      type="button"
-                                      onClick={() => onOpenDisposition(item)}
-                                      className="px-2 py-1 rounded-md bg-white border border-indigo-200 hover:bg-indigo-50 text-[11px] font-semibold text-indigo-700"
-                                    >
-                                      Disposisi
                                     </button>
                                   )}
                                   {perms.canDeleteAgenda(item) && (
@@ -2112,17 +1962,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </div>
             </div>
 
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <label className="inline-flex items-center gap-2 text-sm text-slate-700 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={includeDisposisiInReport}
-                  onChange={(e) => setIncludeDisposisiInReport(e.target.checked)}
-                  className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                />
-                <span>Sertakan disposisi &amp; nomor surat di laporan</span>
-              </label>
-
+            <div className="flex flex-wrap items-center justify-end gap-2">
               <button
                 type="button"
                 onClick={() => {
@@ -2176,9 +2016,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   <th className="py-3 px-3.5 whitespace-nowrap">Waktu (WIB)</th>
                   <th className="py-3 px-3.5">Kegiatan &amp; Lokasi</th>
                   <th className="py-3 px-3.5">Bidang / PIC</th>
-                  {includeDisposisiInReport && (
-                    <th className="py-3 px-3.5">No. Surat &amp; Disposisi</th>
-                  )}
                   <th className="py-3 px-3.5">Status</th>
                   <th className="py-3 px-3.5 text-right">Aksi</th>
                 </tr>
@@ -2187,7 +2024,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 {rekapFiltered.length === 0 ? (
                   <tr>
                     <td
-                      colSpan={(showDateColumn ? 7 : 6) + (includeDisposisiInReport ? 1 : 0)}
+                      colSpan={showDateColumn ? 7 : 6}
                       className="py-10 text-center text-slate-500"
                     >
                       Tidak ada agenda pada {rekapPeriodTitle}.
@@ -2213,18 +2050,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         <div className="font-semibold text-slate-800">{item.penyelenggara}</div>
                         <div className="text-slate-500">{item.pejabatPendamping || '-'}</div>
                       </td>
-                      {includeDisposisiInReport && (
-                        <td className="py-3 px-3.5 text-xs">
-                          <div className="font-mono text-slate-700">{item.nomorSurat || '-'}</div>
-                          <span
-                            className={`mt-1 inline-block rounded border px-1.5 py-0.5 text-[10px] font-semibold ${disposisiColorClass(
-                              item.statusDisposisi
-                            )}`}
-                          >
-                            {item.statusDisposisi}
-                          </span>
-                        </td>
-                      )}
                       <td className="py-3 px-3.5">
                         <span
                           className={`inline-block rounded border px-2 py-0.5 text-xs font-semibold ${statusColorClass(
