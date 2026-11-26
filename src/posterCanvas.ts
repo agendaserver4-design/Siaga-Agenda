@@ -11,12 +11,10 @@ import {
   CardTheme,
   formatRentangWaktu,
   formatTanggalLengkap,
-  getConflictsForCandidate,
 } from './types';
 
 export interface PosterRenderOptions {
   agendas: AgendaItem[];
-  allAgendasForConflict: AgendaItem[];
   selectedDate: string;
   selectedMonth: string; // YYYY-MM
   cardMode: CardMode;
@@ -24,7 +22,6 @@ export interface PosterRenderOptions {
   focusedAgenda: AgendaItem | null;
   orgTitle: string;
   showUpdatedBadge: boolean;
-  showConflictBadge: boolean;
   showZoomUrl: boolean;
   showIllustration: boolean;
 }
@@ -189,7 +186,7 @@ function drawRowPhotoRight(
   item: AgendaItem,
   onReady?: () => void
 ) {
-  const photoW = 196;
+  const photoW = 200;
   const photoX = cardX + cardW - photoW;
   const photoImg = loadCachedImage(pickActivityPhotoSrc(item), onReady);
 
@@ -207,10 +204,10 @@ function drawRowPhotoRight(
     ctx.fillRect(photoX, cardY, photoW, cardH);
   }
 
-  // Smooth horizontal fade from card background into the photograph like IMG-20261125-WA0006
+  // Smooth horizontal fade from card background into documentary photograph (matches IMG-20261125-WA0006)
   const fadeGrad = ctx.createLinearGradient(photoX, 0, photoX + 76, 0);
   fadeGrad.addColorStop(0, cardBgColor);
-  fadeGrad.addColorStop(0.35, cardBgColor);
+  fadeGrad.addColorStop(0.32, cardBgColor);
   fadeGrad.addColorStop(1, 'rgba(255,255,255,0)');
   ctx.fillStyle = fadeGrad;
   ctx.fillRect(photoX - 4, cardY, 84, cardH);
@@ -241,14 +238,12 @@ function drawBadgeGlyph(
     ctx.lineTo(cx, cy + 9);
     ctx.stroke();
   } else if (kategori === 'Kunjungan / Dinas') {
-    // Flame / action icon
     ctx.beginPath();
     ctx.moveTo(cx, cy - 11);
     ctx.bezierCurveTo(cx + 9, cy - 3, cx + 10, cy + 7, cx, cy + 10);
     ctx.bezierCurveTo(cx - 10, cy + 7, cx - 9, cy - 3, cx, cy - 11);
     ctx.stroke();
   } else if (kategori === 'Undangan Resmi') {
-    // Building / Pendopo icon
     ctx.beginPath();
     ctx.moveTo(cx - 11, cy - 3);
     ctx.lineTo(cx, cy - 11);
@@ -257,7 +252,6 @@ function drawBadgeGlyph(
     ctx.stroke();
     ctx.strokeRect(cx - 8, cy - 3, 16, 12);
   } else {
-    // Group meeting icon
     ctx.beginPath();
     ctx.arc(cx, cy - 5, 4.2, 0, Math.PI * 2);
     ctx.stroke();
@@ -272,60 +266,78 @@ function drawSidoarjoSkylineSilhouette(
   ctx: CanvasRenderingContext2D,
   width: number,
   baseY: number,
-  color: string
+  isDark: boolean
 ) {
   ctx.save();
-  ctx.fillStyle = color;
 
-  // Ground strip
-  ctx.fillRect(0, baseY - 6, width, 10);
-
-  // Left city blocks + trees
-  ctx.fillRect(36, baseY - 46, 36, 40);
-  ctx.fillRect(80, baseY - 68, 42, 62);
-  ctx.fillRect(130, baseY - 38, 30, 32);
-
-  // Bridge / Tower silhouette (left-center)
-  ctx.fillRect(218, baseY - 82, 8, 76);
-  ctx.fillRect(268, baseY - 82, 8, 76);
+  // Soft horizon cloud/mist silhouette layer behind skyline (like IMG-20261125-WA0006)
+  ctx.fillStyle = isDark ? 'rgba(30, 58, 95, 0.25)' : 'rgba(186, 203, 224, 0.42)';
   ctx.beginPath();
-  ctx.moveTo(182, baseY - 18);
-  ctx.quadraticCurveTo(222, baseY - 76, 222, baseY - 76);
-  ctx.lineTo(226, baseY - 76);
-  ctx.lineTo(272, baseY - 76);
-  ctx.lineTo(312, baseY - 18);
-  ctx.lineTo(304, baseY - 18);
-  ctx.lineTo(270, baseY - 64);
-  ctx.lineTo(224, baseY - 64);
-  ctx.lineTo(190, baseY - 18);
+  ctx.moveTo(0, baseY);
+  ctx.lineTo(0, baseY - 38);
+  ctx.quadraticCurveTo(180, baseY - 96, 360, baseY - 52);
+  ctx.quadraticCurveTo(560, baseY - 112, 780, baseY - 64);
+  ctx.quadraticCurveTo(940, baseY - 104, width, baseY - 46);
+  ctx.lineTo(width, baseY);
   ctx.closePath();
   ctx.fill();
 
-  // Mid city & trees
-  for (let tx = 340; tx <= 460; tx += 36) {
+  // Main navy silhouette of Sidoarjo landmarks (bridge + Jayandaru monument + city)
+  ctx.fillStyle = isDark ? 'rgba(148, 163, 184, 0.22)' : 'rgba(11, 34, 62, 0.34)';
+  ctx.fillRect(0, baseY - 8, width, 12);
+
+  // Left city blocks + trees
+  ctx.fillRect(28, baseY - 50, 34, 42);
+  ctx.fillRect(68, baseY - 72, 42, 64);
+  ctx.fillRect(118, baseY - 42, 30, 34);
+
+  // Cable-stayed bridge silhouette (left-center, matching IMG-20261125-WA0006)
+  ctx.fillRect(210, baseY - 88, 7, 80);
+  ctx.fillRect(262, baseY - 88, 7, 80);
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = isDark ? 'rgba(148, 163, 184, 0.22)' : 'rgba(11, 34, 62, 0.34)';
+  [175, 190, 290, 308].forEach((tx, idx) => {
+    ctx.beginPath();
+    ctx.moveTo(idx < 2 ? 213 : 265, baseY - 84);
+    ctx.lineTo(tx, baseY - 12);
+    ctx.stroke();
+  });
+
+  // Trees & mid-town silhouettes
+  for (let tx = 335; tx <= 455; tx += 34) {
     ctx.beginPath();
     ctx.arc(tx, baseY - 22, 16, 0, Math.PI * 2);
     ctx.fill();
   }
 
-  // Monumen Jayandaru inspired central-right spire
-  const mx = 615;
-  ctx.fillRect(mx - 22, baseY - 26, 44, 20);
-  ctx.fillRect(mx - 14, baseY - 56, 28, 30);
+  // Monumen Jayandaru inspired central spire
+  const mx = 510;
+  ctx.fillRect(mx - 22, baseY - 28, 44, 20);
+  ctx.fillRect(mx - 14, baseY - 58, 28, 30);
   ctx.beginPath();
   ctx.moveTo(mx, baseY - 122);
-  ctx.lineTo(mx + 12, baseY - 56);
-  ctx.lineTo(mx - 12, baseY - 56);
+  ctx.lineTo(mx + 12, baseY - 58);
+  ctx.lineTo(mx - 12, baseY - 58);
   ctx.closePath();
   ctx.fill();
 
-  // Right office & tower silhouettes
-  ctx.fillRect(700, baseY - 48, 44, 42);
-  ctx.fillRect(755, baseY - 76, 32, 70);
-  ctx.fillRect(800, baseY - 40, 52, 34);
-  ctx.fillRect(885, baseY - 94, 22, 88);
-  ctx.fillRect(920, baseY - 62, 48, 56);
-  ctx.fillRect(980, baseY - 38, 60, 32);
+  // Secondary monument & office skyline on right
+  const sx = 720;
+  ctx.fillRect(sx - 18, baseY - 30, 36, 22);
+  ctx.beginPath();
+  ctx.moveTo(sx, baseY - 94);
+  ctx.lineTo(sx + 11, baseY - 30);
+  ctx.lineTo(sx - 11, baseY - 30);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.fillRect(615, baseY - 46, 46, 38);
+  ctx.fillRect(780, baseY - 52, 42, 44);
+  ctx.fillRect(834, baseY - 76, 30, 68);
+  ctx.fillRect(880, baseY - 44, 48, 36);
+  ctx.fillRect(940, baseY - 88, 22, 80);
+  ctx.fillRect(974, baseY - 60, 48, 52);
+  ctx.fillRect(1030, baseY - 40, 50, 32);
 
   ctx.restore();
 }
@@ -344,40 +356,41 @@ export function renderBroadcastPosterCanvas(
       ? [opts.focusedAgenda]
       : opts.agendas.slice(0, 12);
 
-  const headerHeight = 258;
-  const skylineHeight = 84;
-  const footerHeight = 96;
-  const paddingX = 36;
+  const headerHeight = 232;
+  const skylineHeight = 86;
+  const footerHeight = 94;
+  const cardX = 56;
+  const cardRightMargin = 32;
+  const cardW = width - cardX - cardRightMargin;
+  const badgeX = 28;
+  const badgeW = 154;
 
   const isDark = opts.cardTheme === 'gelap';
   const isCleanWhite = opts.cardTheme === 'putih';
   const cardBgColor = isDark ? '#12243B' : '#FFFFFF';
 
   const rowLayouts = itemsToRender.map((item) => {
-    ctx.font = '700 24px "Plus Jakarta Sans", system-ui, sans-serif';
-    const textMaxW = opts.showIllustration ? 430 : 605;
+    ctx.font = '700 23px "Poppins", system-ui, sans-serif';
+    const textMaxW = opts.showIllustration ? 430 : 620;
     const titleLines = wrapTextLines(ctx, item.judul, textMaxW, 3);
-    ctx.font = '500 18px "Plus Jakarta Sans", system-ui, sans-serif';
+    ctx.font = '500 17px "Poppins", system-ui, sans-serif';
     const locLines = wrapTextLines(ctx, `di ${item.lokasi}`, textMaxW, 2);
 
-    const hasBadgeTop =
-      (opts.showUpdatedBadge && Boolean(item.isUpdated)) ||
-      (opts.showConflictBadge &&
-        getConflictsForCandidate(opts.allAgendasForConflict, item).length > 0);
+    const hasBadgeTop = opts.showUpdatedBadge && Boolean(item.isUpdated);
     const hasZoomLine = opts.showZoomUrl && Boolean(item.zoomUrl);
 
     const contentH =
-      (hasBadgeTop ? 26 : 0) +
-      titleLines.length * 30 +
-      locLines.length * 23 +
-      (hasZoomLine ? 24 : 0) +
-      30;
-    const rowH = Math.max(114, contentH);
+      (hasBadgeTop ? 24 : 0) +
+      titleLines.length * 29 +
+      locLines.length * 22 +
+      (hasZoomLine ? 22 : 0) +
+      28;
+    const rowH = Math.max(110, contentH);
     return { item, titleLines, locLines, hasBadgeTop, hasZoomLine, rowH };
   });
 
-  const bodyPaddingY = 26;
-  const rowGap = 12;
+  const bodyPaddingY = 24;
+  const rowGap = 11;
   const rowsTotalH =
     rowLayouts.length > 0
       ? rowLayouts.reduce((acc, r) => acc + r.rowH + rowGap, 0) - rowGap
@@ -390,67 +403,76 @@ export function renderBroadcastPosterCanvas(
   canvas.width = width;
   canvas.height = totalHeight;
 
-  // Base Canvas Background
-  ctx.fillStyle = isDark ? '#0B1626' : '#F1F5F9';
-  ctx.fillRect(0, 0, width, totalHeight);
+  // Base Canvas Background matching IMG-20261125-WA0006
+  if (isDark) {
+    ctx.fillStyle = '#0B1626';
+    ctx.fillRect(0, 0, width, totalHeight);
+  } else if (isCleanWhite) {
+    ctx.fillStyle = '#F8FAFC';
+    ctx.fillRect(0, 0, width, totalHeight);
+  } else {
+    const bgGrad = ctx.createLinearGradient(0, 0, 0, totalHeight);
+    bgGrad.addColorStop(0, '#EEF4FA');
+    bgGrad.addColorStop(0.6, '#E8EFF7');
+    bgGrad.addColorStop(1, '#DFE9F4');
+    ctx.fillStyle = bgGrad;
+    ctx.fillRect(0, 0, width, totalHeight);
+  }
 
   // =========================================================================
-  // 1. EDITORIAL HEADER BANNER (Matches IMG-20261125-WA0006)
+  // 1. EDITORIAL HEADER BANNER (Faithful to IMG-20261125-WA0006)
   // =========================================================================
   const heroImg = loadCachedImage(headerHeroSrc, onImageReady);
 
   ctx.save();
-  ctx.fillStyle = isDark ? '#061220' : '#0A213C';
+  ctx.fillStyle = isDark ? '#061220' : '#081D36';
   ctx.fillRect(0, 0, width, headerHeight);
 
   if (heroImg) {
-    // Draw hero photograph on right 60% of header
+    // Draw hero photograph sharply on right half (starting right of the diagonal orange ribbon)
     ctx.save();
     ctx.beginPath();
-    ctx.moveTo(485, 0);
+    ctx.moveTo(590, 0);
     ctx.lineTo(width, 0);
     ctx.lineTo(width, headerHeight);
-    ctx.lineTo(420, headerHeight);
+    ctx.lineTo(525, headerHeight);
     ctx.closePath();
     ctx.clip();
 
-    drawImageCover(ctx, heroImg, 410, 0, width - 410, headerHeight);
+    drawImageCover(ctx, heroImg, 515, 0, width - 515, headerHeight);
 
-    // Smooth dark navy fade from left into hero photo
-    const heroFade = ctx.createLinearGradient(420, 0, 680, 0);
-    heroFade.addColorStop(0, isDark ? '#061220' : '#0A213C');
-    heroFade.addColorStop(0.42, isDark ? 'rgba(6,18,32,0.75)' : 'rgba(10,33,60,0.72)');
-    heroFade.addColorStop(1, 'rgba(10,33,60,0.12)');
-    ctx.fillStyle = heroFade;
-    ctx.fillRect(410, 0, width - 410, headerHeight);
+    // Light subtle blend only at the diagonal edge + top-right text readability vignette
+    const edgeFade = ctx.createLinearGradient(525, 0, 615, 0);
+    edgeFade.addColorStop(0, isDark ? 'rgba(6,18,32,0.55)' : 'rgba(8,29,54,0.48)');
+    edgeFade.addColorStop(1, 'rgba(8,29,54,0)');
+    ctx.fillStyle = edgeFade;
+    ctx.fillRect(520, 0, 105, headerHeight);
 
-    // Subtle right vignette for legibility of top-right tagline
-    const rightVig = ctx.createLinearGradient(width - 200, 0, width, 120);
-    rightVig.addColorStop(0, 'rgba(10,33,60,0)');
-    rightVig.addColorStop(1, 'rgba(8,22,40,0.78)');
+    const rightVig = ctx.createLinearGradient(width - 210, 0, width, 125);
+    rightVig.addColorStop(0, 'rgba(8,22,40,0)');
+    rightVig.addColorStop(1, 'rgba(8,22,40,0.72)');
     ctx.fillStyle = rightVig;
     ctx.fillRect(width - 220, 0, 220, 140);
     ctx.restore();
   }
 
-  // Diagonal orange accent ribbon separating text zone and hero photo
+  // Diagonal orange accent ribbon + thin gold hairline separating left navy & right photo
   ctx.beginPath();
-  ctx.moveTo(575, 0);
-  ctx.lineTo(594, 0);
-  ctx.lineTo(525, headerHeight);
-  ctx.lineTo(506, headerHeight);
+  ctx.moveTo(582, 0);
+  ctx.lineTo(604, 0);
+  ctx.lineTo(538, headerHeight);
+  ctx.lineTo(516, headerHeight);
   ctx.closePath();
   ctx.fillStyle = '#EA580C';
   ctx.fill();
 
-  // Subtle gold hairline beside diagonal ribbon
   ctx.beginPath();
-  ctx.moveTo(598, 0);
-  ctx.lineTo(602, 0);
-  ctx.lineTo(533, headerHeight);
-  ctx.lineTo(529, headerHeight);
+  ctx.moveTo(606, 0);
+  ctx.lineTo(611, 0);
+  ctx.lineTo(545, headerHeight);
+  ctx.lineTo(540, headerHeight);
   ctx.closePath();
-  ctx.fillStyle = '#F59E0B';
+  ctx.fillStyle = '#FBBF24';
   ctx.fill();
   ctx.restore();
 
@@ -458,20 +480,20 @@ export function renderBroadcastPosterCanvas(
   ctx.save();
   ctx.textAlign = 'right';
   ctx.fillStyle = '#FFFFFF';
-  ctx.font = '700 17px "Plus Jakarta Sans", system-ui, sans-serif';
-  ctx.fillText('Sidoarjo', width - 28, 36);
-  ctx.fillText('Tangguh', width - 28, 56);
-  ctx.fillStyle = '#FDBA74';
-  ctx.font = '600 14px "Plus Jakarta Sans", system-ui, sans-serif';
-  ctx.fillText('Selamat', width - 28, 78);
-  ctx.fillText('Bersama', width - 28, 96);
+  ctx.font = '700 18px "Poppins", system-ui, sans-serif';
+  ctx.fillText('Sidoarjo', width - 26, 36);
+  ctx.fillText('Tangguh', width - 26, 58);
+  ctx.fillStyle = '#FDE68A';
+  ctx.font = '600 15px "Poppins", system-ui, sans-serif';
+  ctx.fillText('Selamat', width - 26, 80);
+  ctx.fillText('Bersama', width - 26, 100);
   ctx.restore();
 
   // Left Circular BPBD Logo
   const logoImg = loadCachedImage(BPBD_LOGO_SRC, onImageReady);
-  const logoCx = 88;
-  const logoCy = 86;
-  const logoR = 48;
+  const logoCx = 84;
+  const logoCy = 76;
+  const logoR = 45;
   if (logoImg) {
     ctx.save();
     ctx.fillStyle = '#EA580C';
@@ -495,15 +517,15 @@ export function renderBroadcastPosterCanvas(
   ctx.save();
   ctx.textAlign = 'left';
   ctx.fillStyle = '#FFFFFF';
-  ctx.font = '800 42px "Plus Jakarta Sans", system-ui, sans-serif';
+  ctx.font = '800 42px "Poppins", system-ui, sans-serif';
   ctx.fillText(
     opts.cardMode === 'bulanan' ? 'REKAP BULANAN' : 'AGENDA KEGIATAN',
-    154,
-    82
+    148,
+    74
   );
   ctx.fillStyle = '#FBBF24';
-  ctx.font = '800 34px "Plus Jakarta Sans", system-ui, sans-serif';
-  ctx.fillText((opts.orgTitle || 'BPBD KAB. SIDOARJO').toUpperCase(), 154, 126);
+  ctx.font = '800 33px "Poppins", system-ui, sans-serif';
+  ctx.fillText((opts.orgTitle || 'BPBD KAB. SIDOARJO').toUpperCase(), 148, 118);
   ctx.restore();
 
   // Orange Date Banner Pill
@@ -516,39 +538,38 @@ export function renderBroadcastPosterCanvas(
   }
 
   ctx.save();
-  const pillGrad = ctx.createLinearGradient(36, 168, 530, 224);
+  const pillGrad = ctx.createLinearGradient(32, 152, 526, 204);
   pillGrad.addColorStop(0, '#EA580C');
   pillGrad.addColorStop(1, '#F97316');
-  drawRoundedRect(ctx, 36, 168, 496, 54, 27);
+  drawRoundedRect(ctx, 32, 152, 496, 52, 26);
   ctx.fillStyle = pillGrad;
   ctx.fill();
   ctx.strokeStyle = 'rgba(255,255,255,0.28)';
   ctx.lineWidth = 1.5;
   ctx.stroke();
 
-  // Calendar icon inside pill
   ctx.strokeStyle = '#FFFFFF';
-  ctx.lineWidth = 2.3;
-  drawRoundedRect(ctx, 58, 183, 22, 22, 4);
+  ctx.lineWidth = 2.2;
+  drawRoundedRect(ctx, 54, 167, 22, 22, 4);
   ctx.stroke();
   ctx.beginPath();
-  ctx.moveTo(58, 191);
-  ctx.lineTo(80, 191);
+  ctx.moveTo(54, 175);
+  ctx.lineTo(76, 175);
   ctx.stroke();
 
   ctx.fillStyle = '#FFFFFF';
-  ctx.font = '700 23px "Plus Jakarta Sans", system-ui, sans-serif';
-  ctx.fillText(bannerText, 94, 203);
+  ctx.font = '700 22px "Poppins", system-ui, sans-serif';
+  ctx.fillText(bannerText, 90, 186);
   ctx.restore();
 
   // =========================================================================
-  // 2. TIMELINE BODY & AGENDA CARDS
+  // 2. TIMELINE SPINE & AGENDA CARDS (Protruding Circle Badges like IMG-20261125-WA0006)
   // =========================================================================
   let cursorY = headerHeight + bodyPaddingY;
 
   if (rowLayouts.length === 0) {
     ctx.save();
-    drawRoundedRect(ctx, paddingX, cursorY, width - paddingX * 2, 175, 18);
+    drawRoundedRect(ctx, 36, cursorY, width - 72, 175, 18);
     ctx.fillStyle = cardBgColor;
     ctx.fill();
     ctx.strokeStyle = isDark ? '#1E3A5F' : '#CBD5E1';
@@ -557,25 +578,22 @@ export function renderBroadcastPosterCanvas(
 
     ctx.fillStyle = isDark ? '#CBD5E1' : '#64748B';
     ctx.textAlign = 'center';
-    ctx.font = '700 25px "Plus Jakarta Sans", system-ui, sans-serif';
+    ctx.font = '700 25px "Poppins", system-ui, sans-serif';
     ctx.fillText('Tidak ada agenda terjadwal pada periode ini.', width / 2, cursorY + 80);
-    ctx.font = '500 18px "Plus Jakarta Sans", system-ui, sans-serif';
+    ctx.font = '500 18px "Poppins", system-ui, sans-serif';
     ctx.fillText('Silakan pilih tanggal lain atau tambah agenda baru.', width / 2, cursorY + 114);
     ctx.restore();
   } else {
-    // Draw vertical timeline spine behind the left badges like IMG-20261125-WA0006
-    const spineX = paddingX + 42;
+    // Vertical timeline spine running through the center of left icon circles
+    const spineX = badgeX + 30; // 58px
     const firstCenterY = cursorY + rowLayouts[0].rowH / 2;
     const lastCenterY =
-      cursorY +
-      rowsTotalH -
-      rowLayouts[rowLayouts.length - 1].rowH / 2;
+      cursorY + rowsTotalH - rowLayouts[rowLayouts.length - 1].rowH / 2;
 
     if (rowLayouts.length > 1) {
       ctx.save();
-      ctx.strokeStyle = isDark ? '#334155' : '#94A3B8';
+      ctx.strokeStyle = isDark ? '#334155' : '#64748B';
       ctx.lineWidth = 2.5;
-      ctx.setLineDash([6, 5]);
       ctx.beginPath();
       ctx.moveTo(spineX, firstCenterY);
       ctx.lineTo(spineX, lastCenterY);
@@ -585,13 +603,11 @@ export function renderBroadcastPosterCanvas(
 
     rowLayouts.forEach((layout, idx) => {
       const { item, titleLines, locLines, hasBadgeTop, hasZoomLine, rowH } = layout;
-      const cardX = paddingX;
-      const cardW = width - paddingX * 2;
       const cardY = cursorY;
 
-      // Card container with soft shadow
+      // White Card Container starting cleanly behind the protruding badge circle
       ctx.save();
-      ctx.shadowColor = isDark ? 'rgba(0,0,0,0.28)' : 'rgba(15, 23, 42, 0.06)';
+      ctx.shadowColor = isDark ? 'rgba(0,0,0,0.3)' : 'rgba(15, 23, 42, 0.08)';
       ctx.shadowBlur = 12;
       ctx.shadowOffsetY = 3;
       drawRoundedRect(ctx, cardX, cardY, cardW, rowH, 16);
@@ -601,50 +617,56 @@ export function renderBroadcastPosterCanvas(
 
       ctx.save();
       drawRoundedRect(ctx, cardX, cardY, cardW, rowH, 16);
-      ctx.strokeStyle = isDark ? '#1F3B5C' : isCleanWhite ? '#CBD5E1' : '#E2E8F0';
+      ctx.strokeStyle = isDark ? '#1F3B5C' : isCleanWhite ? '#CBD5E1' : '#DCE5F0';
       ctx.lineWidth = 1.25;
       ctx.stroke();
       ctx.restore();
 
-      // Optional right-aligned faded documentary photograph (matching IMG-20261125-WA0006)
+      // Right-aligned faded documentary photograph
       if (opts.showIllustration) {
         drawRowPhotoRight(ctx, cardX, cardY, cardW, rowH, cardBgColor, item, onImageReady);
       }
 
-      // Left Stadium Time Badge + Circular Icon
+      // Protruding Stadium Time Badge + Circular Icon on Timeline Spine
       const isOnline =
         /zoom|daring|virtual|meet/i.test(item.lokasi) || item.kategori === 'Rapat Eksternal';
       const badgeColor = isOnline ? '#0B4F8A' : idx % 2 === 0 ? '#EA580C' : '#0B4F8A';
-      const badgeX = cardX + 14;
-      const badgeH = item.sampaiSelesai ? 70 : 62;
+      const badgeH = item.sampaiSelesai ? 68 : 62;
       const badgeY = cardY + rowH / 2 - badgeH / 2;
-      const badgeW = 148;
 
       ctx.save();
       drawRoundedRect(ctx, badgeX, badgeY, badgeW, badgeH, 32);
       ctx.fillStyle = badgeColor;
       ctx.fill();
 
-      // Left circular ring inside stadium pill
-      const iconCx = badgeX + 29;
+      // Left circular ring sitting directly on timeline spine
+      const iconCx = spineX;
       const iconCy = badgeY + badgeH / 2;
-      ctx.fillStyle = 'rgba(255,255,255,0.18)';
+      ctx.fillStyle = badgeColor;
       ctx.beginPath();
-      ctx.arc(iconCx, iconCy, 20, 0, Math.PI * 2);
+      ctx.arc(iconCx, iconCy, 24, 0, Math.PI * 2);
       ctx.fill();
+      ctx.strokeStyle = '#FFFFFF';
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+
       drawBadgeGlyph(ctx, iconCx, iconCy, item.kategori, isOnline);
 
       // Time text inside pill
       ctx.fillStyle = '#FFFFFF';
       ctx.textAlign = 'left';
       ctx.font = '800 22px "JetBrains Mono", monospace';
-      ctx.fillText(item.jamMulai.replace(':', '.'), badgeX + 58, badgeY + (item.sampaiSelesai ? 29 : 31));
-      ctx.font = '700 12px "Plus Jakarta Sans", system-ui, sans-serif';
-      ctx.fillStyle = 'rgba(255,255,255,0.92)';
       ctx.fillText(
-        item.sampaiSelesai ? 'WIB - Selesai' : `s.d ${item.jamSelesai.replace(':', '.')}`,
-        badgeX + 58,
-        badgeY + (item.sampaiSelesai ? 49 : 48)
+        item.jamMulai.replace(':', '.'),
+        badgeX + 61,
+        badgeY + (item.sampaiSelesai ? 28 : 30)
+      );
+      ctx.font = '700 12px "Poppins", system-ui, sans-serif';
+      ctx.fillStyle = 'rgba(255,255,255,0.95)';
+      ctx.fillText(
+        item.sampaiSelesai ? 'WIB - Selesai' : 'WIB',
+        badgeX + 61,
+        badgeY + (item.sampaiSelesai ? 48 : 48)
       );
       ctx.restore();
 
@@ -652,74 +674,57 @@ export function renderBroadcastPosterCanvas(
       const textX = badgeX + badgeW + 18;
       let textY = cardY + 26;
 
-      if (hasBadgeTop) {
-        let pillOffsetX = textX;
-        const conflicts = opts.showConflictBadge
-          ? getConflictsForCandidate(opts.allAgendasForConflict, item)
-          : [];
-        if (opts.showUpdatedBadge && item.isUpdated) {
-          ctx.save();
-          drawRoundedRect(ctx, pillOffsetX, textY - 14, 108, 19, 5);
-          ctx.fillStyle = '#DCFCE7';
-          ctx.fill();
-          ctx.fillStyle = '#15803D';
-          ctx.font = '800 11px "Plus Jakarta Sans", system-ui, sans-serif';
-          ctx.fillText('UPDATE / BARU', pillOffsetX + 8, textY);
-          pillOffsetX += 116;
-          ctx.restore();
-        }
-        if (conflicts.length > 0) {
-          ctx.save();
-          drawRoundedRect(ctx, pillOffsetX, textY - 14, 102, 19, 5);
-          ctx.fillStyle = '#FEE2E2';
-          ctx.fill();
-          ctx.fillStyle = '#DC2626';
-          ctx.font = '800 11px "Plus Jakarta Sans", system-ui, sans-serif';
-          ctx.fillText(`BENTROK (${conflicts.length})`, pillOffsetX + 8, textY);
-          ctx.restore();
-        }
+      if (hasBadgeTop && opts.showUpdatedBadge && item.isUpdated) {
+        ctx.save();
+        drawRoundedRect(ctx, textX, textY - 14, 108, 19, 5);
+        ctx.fillStyle = '#DCFCE7';
+        ctx.fill();
+        ctx.fillStyle = '#15803D';
+        ctx.font = '800 11px "Poppins", system-ui, sans-serif';
+        ctx.fillText('UPDATE / BARU', textX + 8, textY);
+        ctx.restore();
         textY += 22;
       }
 
       ctx.save();
       ctx.textAlign = 'left';
       ctx.fillStyle = isDark ? '#F8FAFC' : '#0F172A';
-      ctx.font = '700 23px "Plus Jakarta Sans", system-ui, sans-serif';
+      ctx.font = '700 22px "Poppins", system-ui, sans-serif';
       titleLines.forEach((line) => {
         ctx.fillText(line, textX, textY);
-        textY += 29;
+        textY += 28;
       });
 
-      ctx.fillStyle = isDark ? '#94A3B8' : '#475569';
-      ctx.font = '500 18px "Plus Jakarta Sans", system-ui, sans-serif';
+      ctx.fillStyle = isDark ? '#94A3B8' : '#334155';
+      ctx.font = '500 17px "Poppins", system-ui, sans-serif';
       locLines.forEach((line) => {
         ctx.fillText(line, textX, textY);
-        textY += 22;
+        textY += 21;
       });
 
       if (hasZoomLine && item.zoomUrl) {
         ctx.fillStyle = isDark ? '#60A5FA' : '#1D4ED8';
-        ctx.font = '600 15px "JetBrains Mono", monospace';
+        ctx.font = '600 14px "JetBrains Mono", monospace';
         const zoomDisplay =
           item.zoomUrl.length > 46 ? `${item.zoomUrl.slice(0, 45)}…` : item.zoomUrl;
         ctx.fillText(`Zoom: ${zoomDisplay}`, textX, textY + 2);
       }
       ctx.restore();
 
-      // PIC Pill Tag positioned cleanly before photo fade zone
-      const rightEdge = cardX + cardW - 14;
-      const picZoneRight = opts.showIllustration ? rightEdge - 148 : rightEdge;
+      // Soft Peach PIC Tag before photo zone
+      const rightEdge = cardX + cardW - 12;
+      const picZoneRight = opts.showIllustration ? rightEdge - 154 : rightEdge;
       const picW = 204;
       const picX = picZoneRight - picW;
       const picText = item.pejabatPendamping || item.penyelenggara || 'Sekretariat BPBD';
       ctx.save();
-      ctx.font = '700 15px "Plus Jakarta Sans", system-ui, sans-serif';
+      ctx.font = '700 15px "Poppins", system-ui, sans-serif';
       const picLines = wrapTextLines(ctx, picText, picW - 36, 2);
       const picH = Math.max(38, picLines.length * 19 + 16);
       const picY = cardY + rowH / 2 - picH / 2;
 
       drawRoundedRect(ctx, picX, picY, picW, picH, 10);
-      ctx.fillStyle = isDark ? 'rgba(30,41,59,0.94)' : 'rgba(255, 247, 237, 0.96)';
+      ctx.fillStyle = isDark ? 'rgba(30,41,59,0.94)' : 'rgba(255, 244, 232, 0.96)';
       ctx.fill();
       ctx.strokeStyle = isDark ? '#334155' : '#FED7AA';
       ctx.lineWidth = 1.2;
@@ -745,52 +750,65 @@ export function renderBroadcastPosterCanvas(
   }
 
   // =========================================================================
-  // 3. SIDOARJO SKYLINE SILHOUETTE + NAVY/ORANGE FOOTER
+  // 3. SIDOARJO SKYLINE SILHOUETTE + SWEEPING WAVE FOOTER
   // =========================================================================
   const footerY = totalHeight - footerHeight;
-  drawSidoarjoSkylineSilhouette(
-    ctx,
-    width,
-    footerY + 6,
-    isDark ? 'rgba(148, 163, 184, 0.16)' : 'rgba(15, 42, 74, 0.16)'
-  );
+  drawSidoarjoSkylineSilhouette(ctx, width, footerY + 6, isDark);
 
   ctx.save();
-  // Angled orange top accent border on footer
-  ctx.fillStyle = '#EA580C';
-  ctx.fillRect(0, footerY, width, 5);
+  ctx.fillStyle = '#081B33';
+  ctx.fillRect(0, footerY, width, footerHeight);
 
-  ctx.fillStyle = '#091E36';
-  ctx.fillRect(0, footerY + 5, width, footerHeight - 5);
-
-  // Subtle decorative compass/helm mark on bottom left
-  ctx.strokeStyle = '#F59E0B';
-  ctx.lineWidth = 2.5;
+  // Sweeping diagonal orange & blue wave across footer top edge (matching IMG-20261125-WA0006)
   ctx.beginPath();
-  ctx.arc(58, footerY + 50, 17, 0, Math.PI * 2);
+  ctx.moveTo(0, footerY);
+  ctx.lineTo(540, footerY);
+  ctx.quadraticCurveTo(615, footerY, 690, footerY - 24);
+  ctx.lineTo(width, footerY - 24);
+  ctx.lineTo(width, footerY + 14);
+  ctx.quadraticCurveTo(655, footerY + 14, 575, footerY + 6);
+  ctx.lineTo(0, footerY + 6);
+  ctx.closePath();
+  ctx.fillStyle = '#EA580C';
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.moveTo(640, footerY + 10);
+  ctx.quadraticCurveTo(780, footerY - 10, width, footerY - 12);
+  ctx.lineTo(width, footerY + 12);
+  ctx.quadraticCurveTo(790, footerY + 18, 640, footerY + 14);
+  ctx.closePath();
+  ctx.fillStyle = '#0E4D8B';
+  ctx.fill();
+
+  // Bottom-left compass/helm emblem
+  ctx.strokeStyle = '#F59E0B';
+  ctx.lineWidth = 2.4;
+  ctx.beginPath();
+  ctx.arc(58, footerY + 52, 16, 0, Math.PI * 2);
   ctx.stroke();
   ctx.beginPath();
-  ctx.arc(58, footerY + 50, 6, 0, Math.PI * 2);
+  ctx.arc(58, footerY + 52, 6, 0, Math.PI * 2);
   ctx.stroke();
   for (let ang = 0; ang < Math.PI * 2; ang += Math.PI / 4) {
     ctx.beginPath();
-    ctx.moveTo(58 + Math.cos(ang) * 8, footerY + 50 + Math.sin(ang) * 8);
-    ctx.lineTo(58 + Math.cos(ang) * 21, footerY + 50 + Math.sin(ang) * 21);
+    ctx.moveTo(58 + Math.cos(ang) * 8, footerY + 52 + Math.sin(ang) * 8);
+    ctx.lineTo(58 + Math.cos(ang) * 20, footerY + 52 + Math.sin(ang) * 20);
     ctx.stroke();
   }
 
   ctx.textAlign = 'left';
   ctx.fillStyle = '#FBBF24';
-  ctx.font = '800 22px "Plus Jakarta Sans", system-ui, sans-serif';
-  ctx.fillText('SIAP  ·  CEPAT  ·  TEPAT  ·  HUMANIS', 92, footerY + 57);
+  ctx.font = '800 22px "Poppins", system-ui, sans-serif';
+  ctx.fillText('SIAP  ·  CEPAT  ·  TEPAT  ·  HUMANIS', 92, footerY + 59);
 
   ctx.textAlign = 'right';
   ctx.fillStyle = '#FFFFFF';
-  ctx.font = '700 20px "Plus Jakarta Sans", system-ui, sans-serif';
-  ctx.fillText('Sidoarjo Tangguh', width - 36, footerY + 43);
+  ctx.font = '700 20px "Poppins", system-ui, sans-serif';
+  ctx.fillText('Sidoarjo Tangguh', width - 34, footerY + 45);
   ctx.fillStyle = '#CBD5E1';
-  ctx.font = '500 15px "Plus Jakarta Sans", system-ui, sans-serif';
-  ctx.fillText('Masyarakat Selamat, Bersama Kita Lebih Kuat', width - 36, footerY + 69);
+  ctx.font = '500 15px "Poppins", system-ui, sans-serif';
+  ctx.fillText('Masyarakat Selamat, Bersama Kita Lebih Kuat', width - 34, footerY + 71);
   ctx.restore();
 }
 
@@ -826,6 +844,20 @@ export async function copyPosterToClipboard(canvas: HTMLCanvasElement): Promise<
       }
     }, 'image/png');
   });
+}
+
+export function buildSingleAgendaText(item: AgendaItem, orgTitle = 'BPBD KAB. SIDOARJO'): string {
+  const zoomLine = item.zoomUrl ? `\n🔗 Zoom: ${item.zoomUrl}` : '';
+  const suratLine = item.nomorSurat ? `\n📄 No. Surat: ${item.nomorSurat}` : '';
+  return [
+    `*AGENDA ${(orgTitle || 'BPBD KAB. SIDOARJO').toUpperCase()}*`,
+    `📅 ${formatTanggalLengkap(item.tanggal)}`,
+    `🕒 ${formatRentangWaktu(item)}`,
+    `📌 *${item.judul}*`,
+    `📍 ${item.lokasi}`,
+    `👤 PIC: ${item.pejabatPendamping || item.penyelenggara}${suratLine}${zoomLine}`,
+    `\n_SIAP · CEPAT · TEPAT · HUMANIS_`,
+  ].join('\n');
 }
 
 export function buildWhatsAppCaption(

@@ -5,8 +5,6 @@ import {
   Building2,
   Calendar,
   CheckCircle2,
-  ChevronDown,
-  ChevronUp,
   Clipboard,
   ClipboardPaste,
   Copy,
@@ -20,6 +18,7 @@ import {
   LayoutDashboard,
   Lock,
   LogOut,
+  MapPin,
   Menu,
   Plus,
   Share2,
@@ -27,11 +26,11 @@ import {
   Sparkles,
   Trash2,
   UserPlus,
-  Users,
   X,
 } from 'lucide-react';
 import { DashboardView } from './DashboardView';
 import {
+  buildSingleAgendaText,
   buildWhatsAppCaption,
   copyPosterToClipboard,
   downloadPosterFile,
@@ -204,7 +203,6 @@ export default function App() {
   const [rememberSession, setRememberSession] = useState(true);
   const [loginError, setLoginError] = useState('');
   const [showForgotHelp, setShowForgotHelp] = useState(false);
-  const [showDemoAccounts, setShowDemoAccounts] = useState(false);
   const [lockState, setLockState] = useState<{ failed: number; lockedUntil: number }>(() => {
     return safeParseJson(localStorage.getItem(LOCKOUT_STORAGE_KEY), {
       failed: 0,
@@ -239,7 +237,6 @@ export default function App() {
   const [cardMode, setCardMode] = useState<CardMode>('harian');
   const [focusedAgenda, setFocusedAgenda] = useState<AgendaItem | null>(null);
   const [showUpdatedBadge, setShowUpdatedBadge] = useState(true);
-  const [showConflictBadge, setShowConflictBadge] = useState(false);
   const [showZoomUrl, setShowZoomUrl] = useState(false);
   const [showIllustration, setShowIllustration] = useState(true);
   const [logoTick, setLogoTick] = useState(0);
@@ -284,13 +281,10 @@ export default function App() {
     onConfirm: () => void;
   } | null>(null);
 
-  // Super Admin tab state
+  // Super Admin tab state & Reminder popup state
   const [adminTab, setAdminTab] = useState<'users' | 'audit'>('users');
   const [auditFilter, setAuditFilter] = useState<'ALL' | 'SUKSES' | 'GAGAL' | 'PERINGATAN'>('ALL');
-
-  // Simultaneous-agenda (Bentrok Jam) Pop-Up Notification state
-  const [conflictPopupOpen, setConflictPopupOpen] = useState(false);
-  const autoShownDatesRef = useRef<Set<string>>(new Set());
+  const [reminderPopupOpen, setReminderPopupOpen] = useState(false);
 
   const notify = (text: string, tone: ToastMessage['tone'] = 'info') => {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -329,7 +323,7 @@ export default function App() {
     return agendas.filter((a) => !a.isConfidential);
   }, [agendas, perms.canAccessConfidential]);
 
-  // Sidebar badge metrics
+  // Sidebar badge & click-triggered simultaneous agenda reminder metrics
   const todayActiveCount = useMemo(() => {
     return visibleAgendas.filter(
       (a) => a.tanggal === selectedDate && a.status !== 'Dibatalkan'
@@ -337,27 +331,16 @@ export default function App() {
   }, [visibleAgendas, selectedDate]);
 
   const simultaneousDayItems = useMemo(() => {
-    const dayItems = visibleAgendas
-      .filter((a) => a.tanggal === selectedDate && a.status !== 'Dibatalkan')
+    return visibleAgendas
+      .filter(
+        (a) =>
+          a.tanggal === selectedDate &&
+          a.status !== 'Dibatalkan' &&
+          a.status !== 'Draft' &&
+          getConflictsForCandidate(agendas, a).length > 0
+      )
       .sort((a, b) => timeToMinutes(a.jamMulai) - timeToMinutes(b.jamMulai));
-    return dayItems
-      .map((item) => ({
-        item,
-        conflicts: getConflictsForCandidate(agendas, item),
-      }))
-      .filter((entry) => entry.conflicts.length > 0);
   }, [visibleAgendas, agendas, selectedDate]);
-
-  const todayConflictCount = simultaneousDayItems.length;
-
-  // Auto-open Pop-up Notifikasi Agenda Bersamaan when user enters a date with simultaneous agendas
-  useEffect(() => {
-    if (!currentUser) return;
-    if (todayConflictCount > 0 && !autoShownDatesRef.current.has(selectedDate)) {
-      autoShownDatesRef.current.add(selectedDate);
-      setConflictPopupOpen(true);
-    }
-  }, [currentUser, selectedDate, todayConflictCount]);
 
   // Poster agendas list
   const posterAgendas = useMemo(() => {
@@ -381,7 +364,6 @@ export default function App() {
       posterCanvasRef.current,
       {
         agendas: posterAgendas,
-        allAgendasForConflict: agendas,
         selectedDate,
         selectedMonth,
         cardMode,
@@ -389,7 +371,6 @@ export default function App() {
         focusedAgenda,
         orgTitle,
         showUpdatedBadge,
-        showConflictBadge,
         showZoomUrl,
         showIllustration,
       },
@@ -398,7 +379,6 @@ export default function App() {
   }, [
     activeView,
     posterAgendas,
-    agendas,
     selectedDate,
     selectedMonth,
     cardMode,
@@ -406,7 +386,6 @@ export default function App() {
     focusedAgenda,
     orgTitle,
     showUpdatedBadge,
-    showConflictBadge,
     showZoomUrl,
     showIllustration,
     logoTick,
@@ -524,14 +503,6 @@ export default function App() {
     setLoginError('');
   };
 
-  // Click demo role -> ONLY fill credentials, do NOT auto-submit
-  const handleFillDemoCredential = (u: UserAccount) => {
-    setLoginIdentity(u.username);
-    setLoginPassword(u.password);
-    setLoginError('');
-    notify(`Kredensial demo ${ROLE_META[u.roleKode].shortLabel} diisi. Klik tombol Masuk.`, 'info');
-  };
-
   // =========================================================================
   // AGENDA CRUD HANDLERS
   // =========================================================================
@@ -609,14 +580,6 @@ export default function App() {
       return;
     }
 
-    const overlapsAfterSave = getConflictsForCandidate(agendas, {
-      id: agendaForm.id,
-      tanggal: agendaForm.tanggal,
-      jamMulai: agendaForm.jamMulai,
-      jamSelesai: resolvedEnd,
-      status: agendaForm.status,
-    });
-
     if (agendaForm.id) {
       setAgendas((prev) =>
         prev.map((a) =>
@@ -650,10 +613,6 @@ export default function App() {
     }
     setAgendaModalOpen(false);
     setAgendaForm(null);
-    if (overlapsAfterSave.length > 0) {
-      setSelectedDate(agendaForm.tanggal);
-      setConflictPopupOpen(true);
-    }
   };
 
   const handleRequestDeleteAgenda = (item: AgendaItem) => {
@@ -723,20 +682,6 @@ export default function App() {
     );
     appendAudit('UBAH_STATUS', 'SUKSES', `Status "${item.judul}" diubah menjadi ${nextStatus}.`);
     notify(`Agenda ditandai ${nextStatus}.`, 'info');
-  };
-
-  const handleQuickShiftSlot = (item: AgendaItem, jamMulai: string, jamSelesai: string) => {
-    setAgendas((prev) =>
-      prev.map((a) =>
-        a.id === item.id ? { ...a, jamMulai, jamSelesai, isUpdated: true } : a
-      )
-    );
-    appendAudit(
-      'GESER_SLOT',
-      'SUKSES',
-      `Jadwal "${item.judul}" digeser ke ${jamMulai}-${jamSelesai} WIB.`
-    );
-    notify(`Jadwal digeser ke slot kosong ${jamMulai} - ${jamSelesai} WIB.`, 'success');
   };
 
   // =========================================================================
@@ -920,213 +865,248 @@ export default function App() {
     const a = document.createElement('a');
     a.href = url;
     a.download = `Audit_Log_SIAGA_BPBD_${todayISO}.csv`;
+    a.rel = 'noopener';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    setTimeout(() => URL.revokeObjectURL(url), 15000);
     notify('Audit Log CSV berhasil diunduh.', 'success');
   };
 
   // =========================================================================
-  // LOGIN GATE RENDER (Matches Screenshots + Dual Logos + Hidden Demo Fill)
+  // LOGIN GATE RENDER (Smart ASN Sidoarjo Inspired + Dual Logos + Hidden Demo)
   // =========================================================================
   if (!currentUser) {
     return (
-      <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4 sm:p-6">
-        <div className="w-full max-w-2xl rounded-2xl bg-white shadow-xl border border-slate-200 overflow-hidden">
-          {/* Dark Navy Top Header with Left Sidoarjo Logo & Right BPBD Logo */}
-          <div className="bg-[#0B2239] text-white p-6 sm:p-8 space-y-5">
-            <div className="flex items-center justify-between gap-4">
-              <div className="flex items-center gap-3.5 min-w-0">
-                <img
-                  src={SIDOARJO_LOGO}
-                  alt="Lambang Kabupaten Sidoarjo"
-                  referrerPolicy="no-referrer"
-                  className="w-12 h-12 sm:w-14 sm:h-14 object-contain bg-white rounded-xl p-1 shrink-0"
-                />
-                <div className="min-w-0">
-                  <p className="text-[11px] font-bold tracking-wider uppercase text-sky-300">
-                    PEMERINTAH KABUPATEN SIDOARJO
-                  </p>
-                  <p className="text-sm sm:text-base font-extrabold tracking-tight text-white">
-                    BPBD KABUPATEN SIDOARJO
-                  </p>
-                </div>
-              </div>
+      <div className="relative min-h-screen overflow-hidden bg-gradient-to-br from-[#03241A] via-[#063E2E] to-[#081F36] flex flex-col justify-between p-4 sm:p-6 lg:p-10">
+        {/* Decorative Smart-ASN Style Ambient Glows & Concentric Orbital Rings */}
+        <div className="pointer-events-none absolute inset-0 overflow-hidden">
+          <div className="absolute -top-28 -left-24 w-96 h-96 rounded-full bg-emerald-400/15 blur-3xl" />
+          <div className="absolute -bottom-32 -right-24 w-[28rem] h-[28rem] rounded-full bg-amber-400/10 blur-3xl" />
+          <div className="absolute top-1/2 left-1/4 -translate-y-1/2 w-[540px] h-[540px] rounded-full border border-emerald-300/10" />
+          <div className="absolute top-1/2 left-1/4 -translate-y-1/2 w-[400px] h-[400px] rounded-full border border-dashed border-emerald-200/15" />
+          <div className="hidden lg:block absolute top-[22%] left-[12%] w-3 h-3 rounded-full bg-emerald-400/70 shadow-[0_0_16px_rgba(52,211,153,0.8)]" />
+          <div className="hidden lg:block absolute bottom-[24%] left-[44%] w-2.5 h-2.5 rounded-full bg-amber-300/80 shadow-[0_0_14px_rgba(252,211,77,0.8)]" />
+        </div>
+
+        {/* Top Official Brand Bar (Dual Logos: Kab. Sidoarjo & BPBD Sidoarjo) */}
+        <header className="relative z-10 max-w-6xl w-full mx-auto flex flex-wrap items-center justify-between gap-4 pb-6">
+          <div className="flex items-center gap-3.5">
+            <div className="flex items-center gap-2 bg-white/10 backdrop-blur-md border border-white/15 rounded-2xl p-1.5 shadow-lg">
+              <img
+                src={SIDOARJO_LOGO}
+                alt="Lambang Kabupaten Sidoarjo"
+                referrerPolicy="no-referrer"
+                className="w-10 h-10 sm:w-11 sm:h-11 object-contain bg-white rounded-xl p-1"
+              />
               <img
                 src={BPBD_LOGO}
-                alt="Logo BPBD Sidoarjo"
+                alt="Logo BPBD Kabupaten Sidoarjo"
                 referrerPolicy="no-referrer"
-                className="w-12 h-12 sm:w-14 sm:h-14 rounded-full object-cover bg-white p-0.5 ring-2 ring-amber-400/70 shrink-0"
+                className="w-10 h-10 sm:w-11 sm:h-11 rounded-xl object-cover bg-white p-0.5"
               />
             </div>
-
-            <div className="space-y-2 pt-1">
-              <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-white">
-                SIAGA BPBD SIDOARJO
-              </h1>
-              <p className="text-sm font-medium text-sky-100">
-                Sistem Informasi Agenda Kegiatan &amp; Disposisi Real-Time
+            <div>
+              <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-emerald-300">
+                Pemerintah Kabupaten Sidoarjo
               </p>
-              <p className="text-xs font-bold tracking-wide text-amber-400">
-                Siap &bull; Cepat &bull; Tepat &bull; Humanis
+              <p className="text-sm sm:text-base font-extrabold text-white tracking-tight">
+                SIAGA AGENDA &middot; BPBD SIDOARJO
               </p>
-              <p className="text-xs sm:text-sm text-slate-200 leading-relaxed pt-1">
-                Platform kedinasan untuk mendigitalisasi pemrosesan surat masuk undangan/disposisi dari aplikasi e-Buddy oleh ASN Sekretariat hingga siap disebarkan ke pimpinan dan grup WhatsApp pegawai.
-              </p>
-            </div>
-
-            <div className="pt-3 border-t border-white/15 text-xs text-slate-300">
-              Jl. Raya Kemiri No. 1, Kec. Sidoarjo, Kabupaten Sidoarjo
             </div>
           </div>
 
-          {/* Login Form Card Body */}
-          <div className="p-6 sm:p-8 space-y-5">
-            <div>
-              <h2 className="text-xl font-bold text-slate-900">Portal Masuk SIAGA BPBD</h2>
-              <p className="text-xs sm:text-sm text-slate-500 mt-1">
-                Masuk menggunakan NIP (18 digit), Email Dinas (@sidoarjokab.go.id), atau Username kedinasan Anda.
+          <div className="hidden sm:flex items-center gap-2 rounded-full bg-white/10 backdrop-blur-md border border-white/15 px-4 py-1.5 text-xs font-semibold text-emerald-100">
+            <ShieldCheck className="w-4 h-4 text-emerald-300" />
+            <span>Portal Kedinasan Terpadu ASN</span>
+          </div>
+        </header>
+
+        {/* Main 2-Column Hero & Login Card */}
+        <main className="relative z-10 max-w-6xl w-full mx-auto grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-10 items-center my-auto py-2">
+          {/* Left Showcase Hero inspired by Smart ASN Sidoarjo */}
+          <section className="lg:col-span-7 text-white space-y-6">
+            <div className="space-y-3">
+              <h1 className="text-3xl sm:text-4xl lg:text-[42px] font-extrabold leading-[1.15] tracking-tight">
+                Akselerasi Layanan{' '}
+                <span className="bg-gradient-to-r from-emerald-300 via-teal-200 to-amber-300 bg-clip-text text-transparent">
+                  Agenda &amp; Disposisi
+                </span>{' '}
+                BPBD Sidoarjo
+              </h1>
+              <p className="text-sm sm:text-base text-emerald-50/85 leading-relaxed max-w-xl font-normal">
+                Platform digital resmi Sekretariat BPBD Kabupaten Sidoarjo untuk pencatatan agenda kegiatan, ekstraksi surat e-Buddy, rekapitulasi jadwal PDF/Excel, hingga publikasi poster WhatsApp real-time.
               </p>
             </div>
 
-            {loginError && (
-              <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs sm:text-sm text-rose-800 flex items-start gap-2.5">
-                <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-                <span>{loginError}</span>
+            {/* Clean Smart-ASN Style Feature Pills */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 max-w-xl">
+              <div className="rounded-2xl bg-white/10 backdrop-blur-sm border border-white/15 px-3.5 py-3 flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-emerald-400/20 text-emerald-300 flex items-center justify-center shrink-0">
+                  <ClipboardPaste className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-xs font-bold text-white truncate">Input e-Buddy</p>
+                  <p className="text-[11px] text-emerald-100/75 truncate">Ekstrak surat cepat</p>
+                </div>
               </div>
-            )}
-
-            <form onSubmit={handleLoginSubmit} className="space-y-4">
-              <div>
-                <label className="block text-xs font-bold text-slate-800 mb-1.5">
-                  NIP / Username Kedinasan <span className="text-rose-600">*</span>
-                </label>
-                <input
-                  type="text"
-                  value={loginIdentity}
-                  onChange={(e) => setLoginIdentity(e.target.value)}
-                  placeholder="Masukkan 18 digit NIP atau username pegawai..."
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-[#0B2239]"
-                  autoComplete="username"
-                />
+              <div className="rounded-2xl bg-white/10 backdrop-blur-sm border border-white/15 px-3.5 py-3 flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-amber-400/20 text-amber-300 flex items-center justify-center shrink-0">
+                  <FileText className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-xs font-bold text-white truncate">Rekap Lengkap</p>
+                  <p className="text-[11px] text-emerald-100/75 truncate">Ekspor PDF &amp; Excel</p>
+                </div>
               </div>
+              <div className="rounded-2xl bg-white/10 backdrop-blur-sm border border-white/15 px-3.5 py-3 flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-sky-400/20 text-sky-300 flex items-center justify-center shrink-0">
+                  <Share2 className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-xs font-bold text-white truncate">Poster WA</p>
+                  <p className="text-[11px] text-emerald-100/75 truncate">Unduh PNG / JPG</p>
+                </div>
+              </div>
+            </div>
 
-              <div>
-                <label className="block text-xs font-bold text-slate-800 mb-1.5">
-                  Kata Sandi <span className="text-rose-600">*</span>
-                </label>
-                <div className="relative">
-                  <input
-                    type={showPassword ? 'text' : 'password'}
-                    value={loginPassword}
-                    onChange={(e) => setLoginPassword(e.target.value)}
-                    placeholder="Masukkan kata sandi..."
-                    className="w-full pl-3.5 pr-11 py-2.5 rounded-xl border border-slate-300 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-[#0B2239]"
-                    autoComplete="current-password"
+            <div className="flex items-center gap-2 text-xs text-emerald-100/80 pt-1">
+              <MapPin className="w-4 h-4 text-amber-300 shrink-0" />
+              <span>Jl. Raya Kemiri No. 1, Kec. Sidoarjo, Kabupaten Sidoarjo, Jawa Timur</span>
+            </div>
+          </section>
+
+          {/* Right Elevated White Login Card */}
+          <section className="lg:col-span-5">
+            <div className="rounded-3xl bg-white shadow-2xl border border-white/20 p-6 sm:p-8 space-y-5">
+              {/* Dual Logo Header Inside Card for Mobile & Clarity */}
+              <div className="flex items-center justify-between gap-3 pb-4 border-b border-slate-100">
+                <div>
+                  <span className="inline-block text-[10px] font-bold uppercase tracking-wider text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 rounded-full">
+                    Akses Pegawai &amp; Pimpinan
+                  </span>
+                  <h2 className="text-xl font-extrabold text-slate-900 mt-1.5">
+                    Portal Masuk SIAGA
+                  </h2>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Gunakan NIP, Email Dinas, atau Username Anda
+                  </p>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <img
+                    src={SIDOARJO_LOGO}
+                    alt="Sidoarjo"
+                    referrerPolicy="no-referrer"
+                    className="w-9 h-9 object-contain rounded-lg border border-slate-100 p-0.5"
                   />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword((prev) => !prev)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 p-1"
-                    aria-label={showPassword ? 'Sembunyikan kata sandi' : 'Tampilkan kata sandi'}
-                  >
-                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
+                  <img
+                    src={BPBD_LOGO}
+                    alt="BPBD"
+                    referrerPolicy="no-referrer"
+                    className="w-9 h-9 rounded-full object-cover border border-amber-300 p-0.5"
+                  />
                 </div>
               </div>
 
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
-                <label className="inline-flex items-center gap-2 text-slate-700 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={rememberSession}
-                    onChange={(e) => setRememberSession(e.target.checked)}
-                    className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                  />
-                  <span>Pertahankan sesi masuk selama jam kerja (07.30 - 16.00 WIB)</span>
-                </label>
-                <button
-                  type="button"
-                  onClick={() => setShowForgotHelp((p) => !p)}
-                  className="inline-flex items-center gap-1 text-blue-700 hover:underline font-semibold shrink-0"
-                >
-                  <HelpCircle className="w-3.5 h-3.5" />
-                  <span>Lupa Kata Sandi / Hubungi Admin</span>
-                </button>
-              </div>
-
-              {showForgotHelp && (
-                <div className="rounded-xl border border-blue-200 bg-blue-50/70 p-3.5 text-xs text-blue-900">
-                  Untuk reset kata sandi ASN, hubungi Admin Sekretariat BPBD Kabupaten Sidoarjo (Subbag Umum &amp; Kepegawaian) atau gunakan Super Admin pada modul manajemen pengguna.
+              {loginError && (
+                <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs sm:text-sm text-rose-800 flex items-start gap-2.5">
+                  <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                  <span>{loginError}</span>
                 </div>
               )}
 
-              <button
-                type="submit"
-                disabled={remainingLockSeconds > 0}
-                className="w-full py-3 px-4 rounded-xl bg-[#EA580C] hover:bg-[#D94E07] disabled:bg-slate-400 text-white text-sm font-extrabold tracking-wide shadow-sm transition cursor-pointer"
-              >
-                MASUK KE DASHBOARD SIAGA BPBD
-              </button>
-            </form>
+              <form onSubmit={handleLoginSubmit} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                    NIP / Username Kedinasan <span className="text-rose-600">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={loginIdentity}
+                    onChange={(e) => setLoginIdentity(e.target.value)}
+                    placeholder="Masukkan 18 digit NIP atau username..."
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 bg-slate-50/50 text-sm text-slate-900 placeholder:text-slate-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-600/25 focus:border-emerald-700 transition"
+                    autoComplete="username"
+                  />
+                </div>
 
-            {/* Collapsible Hidden Demo Selector (Click fills Username & Password) */}
-            <div className="pt-3 border-t border-slate-200">
-              <button
-                type="button"
-                onClick={() => setShowDemoAccounts((prev) => !prev)}
-                className="w-full flex items-center justify-between text-xs font-semibold text-slate-500 hover:text-slate-800 py-1.5"
-              >
-                <span>
-                  {showDemoAccounts
-                    ? 'Sembunyikan Akun Demo Uji Coba'
-                    : 'Tampilkan Akun Demo Uji Coba (4 Peran RBAC)'}
-                </span>
-                {showDemoAccounts ? (
-                  <ChevronUp className="w-4 h-4" />
-                ) : (
-                  <ChevronDown className="w-4 h-4" />
-                )}
-              </button>
-
-              {showDemoAccounts && (
-                <div className="mt-3 space-y-2">
-                  <p className="text-[11px] text-slate-500">
-                    Klik salah satu peran untuk mengisi NIP/Username &amp; Kata Sandi ke formulir di atas:
-                  </p>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                    {users.slice(0, 4).map((u) => (
-                      <button
-                        key={u.id}
-                        type="button"
-                        onClick={() => handleFillDemoCredential(u)}
-                        className="rounded-xl border border-slate-200 bg-slate-50/70 hover:bg-blue-50/60 hover:border-blue-300 p-3 text-left transition"
-                      >
-                        <div className="text-xs font-bold text-slate-900">
-                          {ROLE_META[u.roleKode].shortLabel}
-                        </div>
-                        <div className="font-mono text-[11px] text-slate-600 mt-0.5">
-                          {u.username}
-                        </div>
-                      </button>
-                    ))}
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                    Kata Sandi <span className="text-rose-600">*</span>
+                  </label>
+                  <div className="relative">
+                    <input
+                      type={showPassword ? 'text' : 'password'}
+                      value={loginPassword}
+                      onChange={(e) => setLoginPassword(e.target.value)}
+                      placeholder="Masukkan kata sandi..."
+                      className="w-full pl-3.5 pr-11 py-2.5 rounded-xl border border-slate-300 bg-slate-50/50 text-sm text-slate-900 placeholder:text-slate-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-600/25 focus:border-emerald-700 transition"
+                      autoComplete="current-password"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword((prev) => !prev)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 p-1"
+                      aria-label={showPassword ? 'Sembunyikan kata sandi' : 'Tampilkan kata sandi'}
+                    >
+                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
                   </div>
                 </div>
-              )}
-            </div>
 
-            <p className="text-[11px] text-slate-400 text-center">
-              Akses terbatas untuk ASN &amp; Pegawai BPBD Kabupaten Sidoarjo. Seluruh aktivitas login dan perubahan jadwal tercatat dalam Audit Log.
-            </p>
-          </div>
-        </div>
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                  <label className="inline-flex items-center gap-2 text-slate-600 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={rememberSession}
+                      onChange={(e) => setRememberSession(e.target.checked)}
+                      className="w-4 h-4 rounded border-slate-300 text-emerald-700 focus:ring-emerald-600"
+                    />
+                    <span>Ingat sesi jam kerja (8 jam)</span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setShowForgotHelp((p) => !p)}
+                    className="inline-flex items-center gap-1 text-emerald-700 hover:underline font-semibold shrink-0"
+                  >
+                    <HelpCircle className="w-3.5 h-3.5" />
+                    <span>Lupa Kata Sandi?</span>
+                  </button>
+                </div>
+
+                {showForgotHelp && (
+                  <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-3.5 text-xs text-emerald-950">
+                    Untuk reset kata sandi ASN, hubungi Admin Sekretariat BPBD Kabupaten Sidoarjo (Subbag Umum &amp; Kepegawaian) atau gunakan Super Admin pada modul manajemen pengguna.
+                  </div>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={remainingLockSeconds > 0}
+                  className="w-full py-3.5 px-4 rounded-xl bg-gradient-to-r from-[#065F46] via-[#047857] to-[#033A2C] hover:opacity-95 disabled:opacity-50 text-white text-sm font-bold tracking-wide shadow-md transition cursor-pointer"
+                >
+                  MASUK KE DASHBOARD SIAGA
+                </button>
+              </form>
+
+              <p className="text-[11px] text-slate-400 text-center leading-relaxed pt-2 border-t border-slate-100">
+                Akses resmi ASN &amp; Pegawai BPBD Kabupaten Sidoarjo. Aktivitas login dan perubahan agenda tercatat dalam Audit Log.
+              </p>
+            </div>
+          </section>
+        </main>
+
+        {/* Bottom Footer */}
+        <footer className="relative z-10 max-w-6xl w-full mx-auto pt-4 flex flex-wrap items-center justify-between gap-2 text-[11px] text-emerald-100/60">
+          <span>&copy; 2026 BPBD Kabupaten Sidoarjo &middot; Sistem Informasi Agenda</span>
+          <span>Sidoarjo Tangguh &middot; Selamat Bersama</span>
+        </footer>
       </div>
     );
   }
 
   // =========================================================================
-  // AUTHENTICATED SHELL: 7-ITEM DARK NAVY SIDEBAR (Matches Screenshot 1)
+  // AUTHENTICATED SHELL: 7-ITEM DARK NAVY SIDEBAR
   // =========================================================================
   const navItems: Array<{
     id: ActiveView;
@@ -1142,11 +1122,11 @@ export default function App() {
       icon: LayoutDashboard,
       visible: true,
       badge: todayActiveCount > 0 ? todayActiveCount : undefined,
-      badgeColor: 'text-rose-400',
+      badgeColor: 'text-emerald-400',
     },
     {
       id: 'ebuddy',
-      label: 'Input Surat / e-Buddy',
+      label: 'Input Agenda',
       icon: ClipboardPaste,
       visible: perms.canUseEBuddy,
     },
@@ -1158,7 +1138,7 @@ export default function App() {
     },
     {
       id: 'rekap_harian',
-      label: 'Rekap Agenda (Hari/Bln/Thn)',
+      label: 'Rekap Agenda',
       icon: FileText,
       visible: true,
     },
@@ -1167,8 +1147,6 @@ export default function App() {
       label: 'Rekap & Broadcast WA',
       icon: Share2,
       visible: perms.canOpenCardStudio,
-      badge: todayConflictCount > 0 ? todayConflictCount : undefined,
-      badgeColor: 'text-amber-400',
     },
     {
       id: 'master_unit',
@@ -1188,9 +1166,9 @@ export default function App() {
 
   const viewTitleMap: Record<ActiveView, string> = {
     dashboard: 'Dashboard Agenda',
-    ebuddy: 'Input Surat / e-Buddy',
+    ebuddy: 'Input Agenda',
     kalender: 'Kalender & Linimasa WIB',
-    rekap_harian: 'Rekap Agenda (Hari / Bulan / Tahun)',
+    rekap_harian: 'Rekap Agenda',
     broadcast_wa: 'Rekap & Broadcast WhatsApp',
     master_unit: 'Master Unit & Lokasi',
     super_admin:
@@ -1200,33 +1178,13 @@ export default function App() {
   const unitLocations = masterUnits.filter((m) => m.tipe === 'Lokasi / Ruangan');
   const unitBidangs = masterUnits.filter((m) => m.tipe === 'Unit / Bidang');
 
-  const agendaModalConflicts = agendaForm
-    ? getConflictsForCandidate(agendas, {
-        id: agendaForm.id,
-        tanggal: agendaForm.tanggal,
-        jamMulai: agendaForm.jamMulai,
-        jamSelesai: agendaForm.jamSelesai,
-        status: agendaForm.status,
-      })
-    : [];
-
-  const agendaModalFreeSlot =
-    agendaForm && agendaModalConflicts.length > 0
-      ? findNextAvailableSlot(
-          agendas,
-          agendaForm.tanggal,
-          timeToMinutes(agendaForm.jamSelesai) - timeToMinutes(agendaForm.jamMulai),
-          agendaForm.id
-        )
-      : null;
-
   const filteredAuditLogs =
     auditFilter === 'ALL'
       ? auditLogs
       : auditLogs.filter((l) => l.status === auditFilter);
 
   return (
-    <div className="min-h-screen bg-slate-100/80 text-slate-900 flex">
+    <div className="min-h-screen bg-[#F2F7F4] text-slate-900 flex">
       {/* Mobile backdrop */}
       {mobileMenuOpen && (
         <div
@@ -1235,40 +1193,48 @@ export default function App() {
         />
       )}
 
-      {/* Left Dark Navy Sidebar */}
+      {/* Left Smart-ASN Emerald Green Sidebar */}
       <aside
-        className={`fixed inset-y-0 left-0 z-50 w-72 bg-[#0B2239] text-white flex flex-col justify-between transition-transform duration-200 lg:static lg:translate-x-0 shrink-0 ${
+        className={`fixed inset-y-0 left-0 z-50 w-72 bg-gradient-to-b from-[#03241A] via-[#042A20] to-[#021C14] text-white flex flex-col justify-between transition-transform duration-200 lg:static lg:translate-x-0 shrink-0 ${
           mobileMenuOpen ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
         <div className="flex flex-col min-h-0 flex-1">
           {/* Sidebar Top Brand */}
-          <div className="px-4 py-4 border-b border-white/10 flex items-center justify-between gap-2">
+          <div className="px-4 py-4 border-b border-emerald-400/15 flex items-center justify-between gap-2">
             <div className="flex items-center gap-3 min-w-0">
-              <img
-                src={BPBD_LOGO}
-                alt="BPBD Sidoarjo"
-                referrerPolicy="no-referrer"
-                className="w-10 h-10 rounded-full object-cover bg-white p-0.5 shrink-0"
-              />
+              <div className="flex items-center gap-1.5 bg-white/10 rounded-xl p-1 shrink-0">
+                <img
+                  src={SIDOARJO_LOGO}
+                  alt="Sidoarjo"
+                  referrerPolicy="no-referrer"
+                  className="w-8 h-8 rounded-lg object-contain bg-white p-0.5"
+                />
+                <img
+                  src={BPBD_LOGO}
+                  alt="BPBD Sidoarjo"
+                  referrerPolicy="no-referrer"
+                  className="w-8 h-8 rounded-lg object-cover bg-white p-0.5"
+                />
+              </div>
               <div className="min-w-0">
                 <p className="text-sm font-extrabold tracking-tight text-white truncate">
                   SIAGA AGENDA BPBD
                 </p>
-                <p className="text-[11px] text-slate-300 truncate">Kabupaten Sidoarjo</p>
+                <p className="text-[11px] text-emerald-200/80 truncate">Kabupaten Sidoarjo</p>
               </div>
             </div>
             <button
               type="button"
               onClick={() => setMobileMenuOpen(false)}
-              className="lg:hidden p-1.5 rounded-lg text-slate-300 hover:bg-white/10 hover:text-white"
+              className="lg:hidden p-1.5 rounded-lg text-emerald-200 hover:bg-white/10 hover:text-white"
               aria-label="Tutup menu"
             >
               <X className="w-5 h-5" />
             </button>
           </div>
 
-          {/* 7-Item Navigation */}
+          {/* Navigation */}
           <nav className="flex-1 overflow-y-auto px-3 py-4 space-y-1">
             {visibleNavItems.map((item) => {
               const Icon = item.icon;
@@ -1283,8 +1249,8 @@ export default function App() {
                   }}
                   className={`w-full flex items-center justify-between gap-2.5 px-3.5 py-2.5 rounded-xl text-sm font-semibold transition whitespace-nowrap ${
                     isActive
-                      ? 'bg-[#1D3E63] text-white shadow-xs'
-                      : 'text-slate-300 hover:bg-white/8 hover:text-white'
+                      ? 'bg-[#0A4D3A] text-white border border-emerald-400/25 shadow-xs'
+                      : 'text-emerald-100/75 hover:bg-white/8 hover:text-white'
                   }`}
                 >
                   <span className="flex items-center gap-3 min-w-0">
@@ -1303,20 +1269,20 @@ export default function App() {
         </div>
 
         {/* Sidebar Bottom User Footer + Logout */}
-        <div className="p-4 border-t border-white/10 space-y-3 bg-[#081A2C]">
+        <div className="p-4 border-t border-emerald-400/15 space-y-3 bg-[#021B13]">
           <div className="space-y-0.5 min-w-0">
             <p className="text-sm font-bold text-white truncate">{currentUser.namaLengkap}</p>
-            <p className="text-xs font-medium text-sky-400 truncate">
+            <p className="text-xs font-medium text-emerald-300 truncate">
               {ROLE_META[currentUser.roleKode].shortLabel} &middot; {currentUser.bidang}
             </p>
-            <p className="font-mono text-[11px] text-slate-400 truncate">
+            <p className="font-mono text-[11px] text-emerald-200/60 truncate">
               NIP {currentUser.nip}
             </p>
           </div>
           <button
             type="button"
             onClick={handleLogout}
-            className="w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl bg-white/8 hover:bg-white/14 border border-white/10 text-xs font-semibold text-white transition"
+            className="w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl bg-white/8 hover:bg-white/14 border border-emerald-400/15 text-xs font-semibold text-white transition"
           >
             <LogOut className="w-4 h-4" />
             <span>Keluar Sesi (Logout)</span>
@@ -1326,13 +1292,13 @@ export default function App() {
 
       {/* Main Content Area */}
       <div className="flex-1 min-w-0 flex flex-col">
-        {/* Top Sticky Header */}
-        <header className="sticky top-0 z-30 bg-white/95 backdrop-blur border-b border-slate-200 px-4 sm:px-6 h-16 flex items-center justify-between gap-3">
+        {/* Top Sticky Header (Input Agenda removed, subtle click-triggered simultaneous reminder icon added) */}
+        <header className="sticky top-0 z-30 bg-white/95 backdrop-blur border-b border-emerald-100 px-4 sm:px-6 h-16 flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
             <button
               type="button"
               onClick={() => setMobileMenuOpen(true)}
-              className="lg:hidden p-2 rounded-lg text-slate-700 hover:bg-slate-100"
+              className="lg:hidden p-2 rounded-lg text-slate-700 hover:bg-emerald-50"
               aria-label="Buka menu navigasi"
             >
               <Menu className="w-5 h-5" />
@@ -1343,28 +1309,21 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2.5 shrink-0">
-            {todayConflictCount > 0 && (
-              <button
-                type="button"
-                onClick={() => setConflictPopupOpen(true)}
-                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 text-xs font-bold whitespace-nowrap shrink-0"
-                title="Lihat Notifikasi Agenda Bersamaan"
-              >
-                <BellRing className="w-3.5 h-3.5 text-rose-600" />
-                <span>Bentrok ({todayConflictCount})</span>
-              </button>
-            )}
-            <span className="hidden sm:inline-block text-xs font-bold text-blue-700 whitespace-nowrap">
+            <span className="hidden sm:inline-block text-xs font-bold text-emerald-700 whitespace-nowrap">
               {ROLE_META[currentUser.roleKode].shortLabel}
             </span>
-            {perms.canCreateAgenda && (
+            {simultaneousDayItems.length > 0 && (
               <button
                 type="button"
-                onClick={() => openNewAgendaModal()}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#0B2239] hover:bg-[#133254] text-white text-xs sm:text-sm font-semibold whitespace-nowrap shrink-0 shadow-xs"
+                onClick={() => setReminderPopupOpen(true)}
+                title={`${simultaneousDayItems.length} agenda bersamaan pada ${formatTanggalLengkap(selectedDate)} — Klik untuk tampilkan`}
+                aria-label="Pengingat agenda bersamaan"
+                className="relative w-9 h-9 rounded-full bg-amber-50 hover:bg-amber-100 border border-amber-300 text-amber-700 flex items-center justify-center transition shadow-xs cursor-pointer"
               >
-                <Plus className="w-4 h-4" />
-                <span>Input Agenda</span>
+                <BellRing className="w-4 h-4" />
+                <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-amber-600 text-white text-[10px] font-extrabold flex items-center justify-center shadow-xs">
+                  {simultaneousDayItems.length}
+                </span>
               </button>
             )}
           </div>
@@ -1379,7 +1338,6 @@ export default function App() {
             <DashboardView
               activeView={activeView}
               role={role}
-              agendas={agendas}
               visibleAgendas={visibleAgendas}
               masterUnits={masterUnits}
               selectedDate={selectedDate}
@@ -1395,7 +1353,6 @@ export default function App() {
               onOpenDisposition={handleOpenDisposition}
               onToggleStatus={handleToggleStatus}
               onConfirmPresence={handleConfirmPresence}
-              onQuickShiftSlot={handleQuickShiftSlot}
               onOpenSinglePoster={(item) => {
                 setFocusedAgenda(item);
                 setCardMode('tunggal');
@@ -1403,21 +1360,20 @@ export default function App() {
               }}
               onOpenMasterModal={openMasterModal}
               onRequestDeleteMaster={handleRequestDeleteMaster}
-              onOpenConflictPopup={() => setConflictPopupOpen(true)}
               onNotify={notify}
             />
           )}
 
-          {/* VIEW: INPUT SURAT / e-BUDDY (Matches Screenshot 2) */}
+          {/* VIEW: INPUT SURAT / e-BUDDY */}
           {activeView === 'ebuddy' && (
             <div className="space-y-5">
-              <div className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-6 shadow-sm space-y-5">
+              <div className="rounded-2xl border border-emerald-100 bg-white p-5 sm:p-6 shadow-sm space-y-5">
                 <div className="space-y-2">
-                  <p className="text-xs font-bold text-blue-700">
-                    Ekstraksi Cepat Surat Masuk &amp; Disposisi
+                  <p className="text-xs font-bold text-emerald-700">
+                    Input Jadwal &amp; Ekstraksi Surat e-Buddy
                   </p>
                   <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900">
-                    Input Agenda dari e-Buddy
+                    Input Agenda Kegiatan
                   </h2>
                   <p className="text-sm text-slate-600 max-w-2xl">
                     Klik tombol <strong>Input Agenda Baru</strong> untuk mengisi jadwal secara langsung, atau tempel teks surat masuk e-Buddy di bawah ini.
@@ -1427,15 +1383,15 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => openNewAgendaModal()}
-                  className="w-full py-3.5 px-5 rounded-xl bg-[#0B2239] hover:bg-[#133254] text-white text-sm font-bold flex items-center justify-center gap-2 shadow-sm transition"
+                  className="w-full py-3.5 px-5 rounded-xl bg-[#064E3B] hover:bg-[#065F46] text-white text-sm font-bold flex items-center justify-center gap-2 shadow-sm transition"
                 >
                   <Plus className="w-4 h-4" />
                   <span>Input Agenda Baru</span>
                 </button>
 
-                <div className="rounded-2xl border border-slate-200 bg-slate-50/50 p-4 sm:p-5 space-y-4">
+                <div className="rounded-2xl border border-emerald-100 bg-emerald-50/30 p-4 sm:p-5 space-y-4">
                   <div className="flex items-center gap-2 text-base font-bold text-slate-900">
-                    <Clipboard className="w-4 h-4 text-blue-700" />
+                    <Clipboard className="w-4 h-4 text-emerald-700" />
                     <span>Ekstrak Teks Surat / Memo e-Buddy</span>
                   </div>
 
@@ -1449,7 +1405,7 @@ export default function App() {
                           key={tpl.label}
                           type="button"
                           onClick={() => handleRunEBuddyExtract(tpl.text)}
-                          className="text-left px-3.5 py-2 rounded-xl border border-slate-200 bg-white hover:bg-blue-50/60 hover:border-blue-300 text-xs font-semibold text-slate-800 transition"
+                          className="text-left px-3.5 py-2 rounded-xl border border-slate-200 bg-white hover:bg-emerald-50/70 hover:border-emerald-300 text-xs font-semibold text-slate-800 transition"
                         >
                           {tpl.label}
                         </button>
@@ -1466,7 +1422,7 @@ export default function App() {
                       value={ebuddyRawText}
                       onChange={(e) => handleRunEBuddyExtract(e.target.value)}
                       placeholder={`Contoh format:\nNomor Surat: 005/2194/438.1.1/2026\nPerihal: Rapat Koordinasi Hidrometeorologi\nHari/Tanggal: Senin, 23 November 2026\nPukul: 08.00 - 10.30 WIB\nTempat: Ruang Rapat Setda Kab. Sidoarjo\nDisposisi: Kalaksa menugaskan Bid. KL`}
-                      className="w-full rounded-xl border border-slate-300 bg-white p-3.5 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/30"
+                      className="w-full rounded-xl border border-slate-300 bg-white p-3.5 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-600/30 focus:border-emerald-700"
                     />
                   </div>
 
@@ -1489,10 +1445,10 @@ export default function App() {
                   </div>
 
                   {ebuddyPreview && (
-                    <div className="rounded-xl border border-blue-200 bg-white p-4 space-y-3">
+                    <div className="rounded-xl border border-emerald-200 bg-white p-4 space-y-3">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="flex items-center gap-2">
-                          <Sparkles className="w-4 h-4 text-blue-600" />
+                          <Sparkles className="w-4 h-4 text-emerald-700" />
                           <span className="text-sm font-bold text-slate-900">
                             Hasil Ekstraksi Otomatis ({ebuddyPreview.detectedFields.length} field terdeteksi)
                           </span>
@@ -1501,7 +1457,7 @@ export default function App() {
                           {ebuddyPreview.detectedFields.map((f) => (
                             <span
                               key={f}
-                              className="px-2 py-0.5 rounded bg-blue-50 text-blue-700 text-[11px] font-semibold"
+                              className="px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 text-[11px] font-semibold"
                             >
                               {f}
                             </span>
@@ -1531,25 +1487,6 @@ export default function App() {
                           </p>
                         </div>
                       </div>
-
-                      {(() => {
-                        const conflicts = getConflictsForCandidate(agendas, {
-                          tanggal: ebuddyPreview.tanggal,
-                          jamMulai: ebuddyPreview.jamMulai,
-                          jamSelesai: ebuddyPreview.jamSelesai,
-                          status: 'Terjadwal',
-                        });
-                        if (conflicts.length === 0) return null;
-                        return (
-                          <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-800 flex items-center gap-2">
-                            <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
-                            <span>
-                              Terdeteksi <strong>{conflicts.length} jadwal bentrok</strong> pada jam tersebut:{' '}
-                              {conflicts.map((c) => c.agenda.judul).join(', ')}.
-                            </span>
-                          </div>
-                        );
-                      })()}
 
                       <div className="flex justify-end">
                         <button
@@ -1639,14 +1576,18 @@ export default function App() {
 
                     <a
                       href={`https://wa.me/?text=${encodeURIComponent(
-                        buildWhatsAppCaption(posterAgendas, selectedDate, orgTitle, showZoomUrl)
+                        cardMode === 'tunggal' && focusedAgenda
+                          ? buildSingleAgendaText(focusedAgenda, orgTitle)
+                          : buildWhatsAppCaption(posterAgendas, selectedDate, orgTitle, showZoomUrl)
                       )}`}
                       target="_blank"
                       rel="noreferrer"
                       onClick={() => {
-                        navigator.clipboard?.writeText(
-                          buildWhatsAppCaption(posterAgendas, selectedDate, orgTitle, showZoomUrl)
-                        );
+                        const caption =
+                          cardMode === 'tunggal' && focusedAgenda
+                            ? buildSingleAgendaText(focusedAgenda, orgTitle)
+                            : buildWhatsAppCaption(posterAgendas, selectedDate, orgTitle, showZoomUrl);
+                        navigator.clipboard?.writeText(caption);
                         notify('Teks broadcast WhatsApp dibuka & disalin.', 'info');
                       }}
                       className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-[#16A34A] hover:bg-[#15803D] text-white text-sm font-bold shadow-xs"
@@ -1654,34 +1595,64 @@ export default function App() {
                       <Share2 className="w-4 h-4" />
                       <span>Share ke WhatsApp</span>
                     </a>
+
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const caption =
+                          cardMode === 'tunggal' && focusedAgenda
+                            ? buildSingleAgendaText(focusedAgenda, orgTitle)
+                            : buildWhatsAppCaption(posterAgendas, selectedDate, orgTitle, showZoomUrl);
+                        try {
+                          await navigator.clipboard.writeText(caption);
+                          notify('Teks agenda WhatsApp berhasil disalin!', 'success');
+                        } catch {
+                          notify('Gagal menyalin teks; silakan salin dari pratinjau teks.', 'warning');
+                        }
+                      }}
+                      className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 text-sm font-bold shadow-xs transition"
+                    >
+                      <Copy className="w-4 h-4 text-emerald-700" />
+                      <span>Salin Teks Agenda (Copy Text)</span>
+                    </button>
                   </div>
 
-                  {/* Checkboxes matching Screenshot 3 */}
+                  {/* Preview Box Teks Agenda */}
+                  <div className="rounded-xl border border-emerald-100 bg-emerald-50/40 p-3 space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-800">
+                        Pratinjau Teks Agenda Siap Salin
+                      </span>
+                      <span className="text-[11px] font-semibold text-emerald-700">
+                        {cardMode === 'tunggal' && focusedAgenda
+                          ? '1 agenda'
+                          : `${posterAgendas.length} agenda`}
+                      </span>
+                    </div>
+                    <pre className="max-h-36 overflow-y-auto whitespace-pre-wrap font-sans text-[11px] leading-relaxed text-slate-700 bg-white rounded-lg border border-emerald-100 p-2.5 select-all">
+                      {cardMode === 'tunggal' && focusedAgenda
+                        ? buildSingleAgendaText(focusedAgenda, orgTitle)
+                        : buildWhatsAppCaption(posterAgendas, selectedDate, orgTitle, showZoomUrl)}
+                    </pre>
+                  </div>
+
+                  {/* Checkboxes */}
                   <div className="space-y-2.5 pt-2 border-t border-slate-100 text-sm text-slate-700">
                     <label className="flex items-center gap-2.5 cursor-pointer select-none">
                       <input
                         type="checkbox"
                         checked={showUpdatedBadge}
                         onChange={(e) => setShowUpdatedBadge(e.target.checked)}
-                        className="w-4 h-4 rounded border-slate-300 text-blue-600"
+                        className="w-4 h-4 rounded border-slate-300 text-emerald-600"
                       />
                       <span>Tandai agenda [UPDATE / BARU]</span>
                     </label>
                     <label className="flex items-center gap-2.5 cursor-pointer select-none">
                       <input
                         type="checkbox"
-                        checked={showConflictBadge}
-                        onChange={(e) => setShowConflictBadge(e.target.checked)}
-                        className="w-4 h-4 rounded border-slate-300 text-blue-600"
-                      />
-                      <span>Tampilkan penanda Bentrok Jam di poster</span>
-                    </label>
-                    <label className="flex items-center gap-2.5 cursor-pointer select-none">
-                      <input
-                        type="checkbox"
                         checked={showZoomUrl}
                         onChange={(e) => setShowZoomUrl(e.target.checked)}
-                        className="w-4 h-4 rounded border-slate-300 text-blue-600"
+                        className="w-4 h-4 rounded border-slate-300 text-emerald-600"
                       />
                       <span>Sertakan URL tautan Zoom di poster</span>
                     </label>
@@ -1690,7 +1661,7 @@ export default function App() {
                         type="checkbox"
                         checked={showIllustration}
                         onChange={(e) => setShowIllustration(e.target.checked)}
-                        className="w-4 h-4 rounded border-slate-300 text-blue-600"
+                        className="w-4 h-4 rounded border-slate-300 text-emerald-600"
                       />
                       <span>Tampilkan foto ilustrasi kegiatan</span>
                     </label>
@@ -1820,7 +1791,7 @@ export default function App() {
               <div className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-6 shadow-sm space-y-5">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div>
-                    <p className="text-xs font-bold uppercase tracking-wider text-blue-700">
+                    <p className="text-xs font-bold uppercase tracking-wider text-emerald-700">
                       Kontrol Keamanan &amp; Otoritas RBAC
                     </p>
                     <h2 className="text-2xl font-bold text-slate-900 mt-0.5">
@@ -1837,7 +1808,7 @@ export default function App() {
                         onClick={() => setAdminTab('users')}
                         className={`px-3.5 py-1.5 rounded-lg text-xs font-bold ${
                           adminTab === 'users'
-                            ? 'bg-[#0B2239] text-white'
+                            ? 'bg-[#064E3B] text-white'
                             : 'text-slate-600 hover:text-slate-900'
                         }`}
                       >
@@ -1848,7 +1819,7 @@ export default function App() {
                         onClick={() => setAdminTab('audit')}
                         className={`px-3.5 py-1.5 rounded-lg text-xs font-bold ${
                           adminTab === 'audit'
-                            ? 'bg-[#0B2239] text-white'
+                            ? 'bg-[#064E3B] text-white'
                             : 'text-slate-600 hover:text-slate-900'
                         }`}
                       >
@@ -1864,7 +1835,7 @@ export default function App() {
                       <button
                         type="button"
                         onClick={() => openUserModal()}
-                        className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#0B2239] hover:bg-[#133254] text-white text-xs font-bold"
+                        className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#064E3B] hover:bg-[#065F46] text-white text-xs font-bold"
                       >
                         <UserPlus className="w-4 h-4" />
                         <span>Tambah Akun ASN</span>
@@ -1879,7 +1850,7 @@ export default function App() {
                         >
                           <div className="space-y-1">
                             <div className="flex items-center justify-between gap-2">
-                              <span className="text-xs font-bold px-2 py-0.5 rounded bg-blue-50 text-blue-800">
+                              <span className="text-xs font-bold px-2 py-0.5 rounded bg-emerald-50 text-emerald-800">
                                 {ROLE_META[u.roleKode].shortLabel}
                               </span>
                               <span
@@ -1909,7 +1880,7 @@ export default function App() {
                               onClick={() => openUserModal(u)}
                               className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-xs font-semibold text-slate-700"
                             >
-                              <Edit3 className="w-3.5 h-3.5 text-blue-600" />
+                              <Edit3 className="w-3.5 h-3.5 text-emerald-700" />
                               Edit
                             </button>
                             <button
@@ -1953,7 +1924,7 @@ export default function App() {
                         <button
                           type="button"
                           onClick={handleExportAuditCsv}
-                          className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-[#0B2239] text-white text-xs font-semibold"
+                          className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-[#064E3B] hover:bg-[#065F46] text-white text-xs font-semibold"
                         >
                           <Download className="w-3.5 h-3.5" />
                           <span>Ekspor Audit Log (.CSV)</span>
@@ -2042,41 +2013,6 @@ export default function App() {
             </div>
 
             <form onSubmit={handleSaveAgendaForm} className="p-5 space-y-4">
-              {agendaModalConflicts.length > 0 && (
-                <div className="rounded-xl border border-rose-300 bg-rose-50 p-3 text-xs text-rose-900 space-y-1.5">
-                  <div className="font-bold flex items-center gap-1.5">
-                    <AlertTriangle className="w-4 h-4 text-rose-600" />
-                    <span>
-                      Peringatan Bentrok Jam ({agendaModalConflicts.length} agenda beririsan):
-                    </span>
-                  </div>
-                  <p>
-                    {agendaModalConflicts
-                      .map((c) => `${c.agenda.judul} (${c.agenda.jamMulai}-${c.agenda.jamSelesai})`)
-                      .join('; ')}
-                  </p>
-                  {agendaModalFreeSlot && (
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setAgendaForm((prev) =>
-                          prev
-                            ? {
-                                ...prev,
-                                jamMulai: agendaModalFreeSlot.jamMulai,
-                                jamSelesai: agendaModalFreeSlot.jamSelesai,
-                              }
-                            : prev
-                        )
-                      }
-                      className="px-2.5 py-1 rounded bg-rose-600 text-white font-semibold hover:bg-rose-700"
-                    >
-                      Gunakan Slot Kosong ({agendaModalFreeSlot.jamMulai} -{' '}
-                      {agendaModalFreeSlot.jamSelesai})
-                    </button>
-                  )}
-                </div>
-              )}
 
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">
@@ -2127,9 +2063,7 @@ export default function App() {
                 </div>
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1">
-                    {agendaForm.sampaiSelesai
-                      ? 'Estimasi Selesai (Deteksi Bentrok)'
-                      : 'Jam Selesai *'}
+                    {agendaForm.sampaiSelesai ? 'Estimasi Jam Selesai' : 'Jam Selesai *'}
                   </label>
                   <input
                     type="time"
@@ -2342,7 +2276,7 @@ export default function App() {
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 rounded-xl bg-[#0B2239] hover:bg-[#133254] text-white text-xs font-bold"
+                  className="px-5 py-2 rounded-xl bg-[#064E3B] hover:bg-[#065F46] text-white text-xs font-bold"
                 >
                   Simpan Agenda
                 </button>
@@ -2418,7 +2352,7 @@ export default function App() {
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-bold"
+                  className="px-4 py-2 rounded-xl bg-[#064E3B] hover:bg-[#065F46] text-white text-xs font-bold"
                 >
                   Simpan Disposisi
                 </button>
@@ -2501,7 +2435,7 @@ export default function App() {
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 rounded-xl bg-[#0B2239] text-white text-xs font-bold"
+                  className="px-4 py-2 rounded-xl bg-[#064E3B] hover:bg-[#065F46] text-white text-xs font-bold"
                 >
                   Simpan Master
                 </button>
@@ -2617,12 +2551,161 @@ export default function App() {
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 rounded-xl bg-[#0B2239] text-white text-xs font-bold"
+                  className="px-4 py-2 rounded-xl bg-[#064E3B] hover:bg-[#065F46] text-white text-xs font-bold"
                 >
                   Simpan Akun
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: CLICK-TRIGGERED PENGINGAT AGENDA BERSAMAAN */}
+      {reminderPopupOpen && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/55 flex items-center justify-center p-4"
+          onClick={() => setReminderPopupOpen(false)}
+        >
+          <div
+            className="w-full max-w-xl max-h-[85vh] overflow-hidden rounded-2xl bg-white shadow-2xl border border-amber-200 flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-5 py-4 bg-gradient-to-r from-[#03241A] via-[#064E3B] to-[#047857] text-white flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="w-9 h-9 rounded-xl bg-amber-400/20 border border-amber-300/40 text-amber-300 flex items-center justify-center shrink-0">
+                  <BellRing className="w-5 h-5" />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="text-sm sm:text-base font-bold truncate">
+                    Pengingat Agenda Bersamaan
+                  </h3>
+                  <p className="text-[11px] text-emerald-100 truncate">
+                    {formatTanggalLengkap(selectedDate)} &middot; {simultaneousDayItems.length} kegiatan beririsan waktu
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setReminderPopupOpen(false)}
+                className="p-1.5 rounded-lg text-emerald-100 hover:bg-white/10 hover:text-white shrink-0"
+                aria-label="Tutup pengingat"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-4 sm:p-5 overflow-y-auto space-y-3">
+              {simultaneousDayItems.length === 0 ? (
+                <p className="text-sm text-slate-500 text-center py-6">
+                  Tidak ada agenda dengan jam bersamaan pada tanggal ini.
+                </p>
+              ) : (
+                simultaneousDayItems.map((item) => {
+                  const overlaps = getConflictsForCandidate(agendas, item);
+                  const nextSlot = findNextAvailableSlot(
+                    agendas,
+                    item.tanggal,
+                    timeToMinutes(item.jamSelesai) - timeToMinutes(item.jamMulai),
+                    item.id
+                  );
+                  return (
+                    <div
+                      key={item.id}
+                      className="rounded-xl border border-amber-200 bg-amber-50/40 p-3.5 space-y-2"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="font-mono text-xs font-bold px-2.5 py-0.5 rounded-md bg-amber-100 text-amber-900">
+                          {formatRentangWaktu(item)}
+                        </span>
+                        <span className="text-[11px] font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md">
+                          PIC: {item.pejabatPendamping || item.penyelenggara}
+                        </span>
+                      </div>
+                      <h4 className="text-sm font-bold text-slate-900 leading-snug">
+                        {item.judul}
+                      </h4>
+                      <p className="text-xs text-slate-600">{item.lokasi}</p>
+                      <div className="text-[11px] text-amber-800 space-y-0.5 pt-1 border-t border-amber-200/70">
+                        {overlaps.map((ov) => (
+                          <div key={ov.agenda.id}>
+                            &bull; Bersamaan {ov.overlapMinutes} mnt dengan:{' '}
+                            <strong className="text-slate-900">{ov.agenda.judul}</strong> (
+                            {formatRentangWaktu(ov.agenda)})
+                          </div>
+                        ))}
+                      </div>
+                      {perms.canEditAgenda && (
+                        <div className="flex flex-wrap items-center gap-2 pt-1.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setReminderPopupOpen(false);
+                              handleOpenDisposition(item);
+                            }}
+                            className="px-2.5 py-1.5 rounded-lg border border-emerald-200 bg-white hover:bg-emerald-50 text-[11px] font-bold text-emerald-800"
+                          >
+                            Atur PIC / Disposisi
+                          </button>
+                          {nextSlot && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setAgendas((prev) =>
+                                  prev.map((a) =>
+                                    a.id === item.id
+                                      ? {
+                                          ...a,
+                                          jamMulai: nextSlot.jamMulai,
+                                          jamSelesai: nextSlot.jamSelesai,
+                                          sampaiSelesai: false,
+                                          isUpdated: true,
+                                        }
+                                      : a
+                                  )
+                                );
+                                appendAudit(
+                                  'GESER_JADWAL',
+                                  'SUKSES',
+                                  `Menggeser "${item.judul}" ke ${nextSlot.jamMulai}-${nextSlot.jamSelesai} WIB.`
+                                );
+                                notify(
+                                  `Jadwal digeser ke ${nextSlot.jamMulai} - ${nextSlot.jamSelesai} WIB.`,
+                                  'success'
+                                );
+                              }}
+                              className="px-2.5 py-1.5 rounded-lg bg-[#064E3B] hover:bg-[#065F46] text-white text-[11px] font-bold"
+                            >
+                              Geser ke {nextSlot.jamMulai} - {nextSlot.jamSelesai} WIB
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setReminderPopupOpen(false);
+                              openEditAgendaModal(item);
+                            }}
+                            className="px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-[11px] font-bold text-slate-700"
+                          >
+                            Edit
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            <div className="px-5 py-3 border-t border-slate-200 bg-slate-50 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setReminderPopupOpen(false)}
+                className="px-4 py-2 rounded-xl bg-[#064E3B] hover:bg-[#065F46] text-white text-xs font-bold"
+              >
+                Tutup Pengingat
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -2653,143 +2736,6 @@ export default function App() {
         </div>
       )}
 
-      {/* MODAL: POP-UP NOTIFIKASI AGENDA BERSAMAAN */}
-      {conflictPopupOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-[1px] flex items-center justify-center p-4">
-          <div className="w-full max-w-2xl max-h-[88vh] flex flex-col rounded-2xl bg-white shadow-2xl border border-rose-200 overflow-hidden">
-            <div className="bg-gradient-to-r from-rose-700 to-orange-600 text-white px-5 py-4 flex items-center justify-between gap-3">
-              <div className="flex items-center gap-3 min-w-0">
-                <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center shrink-0">
-                  <BellRing className="w-5 h-5 text-white" />
-                </div>
-                <div className="min-w-0">
-                  <h3 className="text-base font-extrabold truncate">
-                    Notifikasi Agenda Bersamaan ({simultaneousDayItems.length})
-                  </h3>
-                  <p className="text-xs text-rose-100 truncate">
-                    {formatTanggalLengkap(selectedDate)} · Deteksi Otomatis Bentrok Jam
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setConflictPopupOpen(false)}
-                className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white shrink-0"
-                aria-label="Tutup pop-up notifikasi"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="flex-1 overflow-y-auto p-5 space-y-3 bg-slate-50/70">
-              {simultaneousDayItems.length === 0 ? (
-                <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-6 text-center text-sm font-semibold text-emerald-800">
-                  Seluruh agenda pada tanggal ini sudah aman tanpa bentrok jam.
-                </div>
-              ) : (
-                simultaneousDayItems.map(({ item, conflicts }) => {
-                  const freeSlot = perms.canEditAgenda
-                    ? findNextAvailableSlot(
-                        agendas,
-                        item.tanggal,
-                        timeToMinutes(item.jamSelesai) - timeToMinutes(item.jamMulai),
-                        item.id
-                      )
-                    : null;
-                  return (
-                    <div
-                      key={item.id}
-                      className="rounded-xl border border-rose-200 bg-white p-4 shadow-2xs space-y-2.5"
-                    >
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <span className="inline-flex items-center gap-1.5 rounded-lg bg-[#0B2239] text-white px-2.5 py-1 text-xs font-bold font-mono">
-                          {formatRentangWaktu(item)}
-                        </span>
-                        <span className="text-[11px] font-bold px-2 py-0.5 rounded bg-rose-100 text-rose-800">
-                          Bersamaan dengan {conflicts.length} agenda
-                        </span>
-                      </div>
-
-                      <div>
-                        <h4 className="text-sm font-extrabold text-slate-900">{item.judul}</h4>
-                        <p className="text-xs text-slate-600 mt-0.5">
-                          📍 {item.lokasi} · 👤 PIC: <strong>{item.pejabatPendamping || item.penyelenggara}</strong>
-                        </p>
-                      </div>
-
-                      <div className="rounded-lg bg-rose-50/80 border border-rose-100 p-2.5 text-xs text-rose-900 space-y-1">
-                        <p className="font-bold">Beririsan waktu dengan:</p>
-                        {conflicts.map((c) => (
-                          <div key={c.agenda.id} className="flex items-center justify-between gap-2">
-                            <span className="truncate">
-                              &bull; {c.agenda.judul} ({formatRentangWaktu(c.agenda)})
-                            </span>
-                            <span className="font-mono font-bold text-rose-700 shrink-0">
-                              {c.overlapMinutes} mnt
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-
-                      <div className="flex flex-wrap items-center gap-2 pt-1">
-                        {perms.canEditDisposition && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setConflictPopupOpen(false);
-                              handleOpenDisposition(item);
-                            }}
-                            className="px-3 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-xs font-bold text-indigo-800"
-                          >
-                            Bagi / Ubah PIC Pendamping
-                          </button>
-                        )}
-                        {freeSlot && (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              handleQuickShiftSlot(item, freeSlot.jamMulai, freeSlot.jamSelesai)
-                            }
-                            className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold"
-                          >
-                            Geser ke Slot Kosong ({freeSlot.jamMulai}-{freeSlot.jamSelesai})
-                          </button>
-                        )}
-                        {perms.canEditAgenda && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setConflictPopupOpen(false);
-                              openEditAgendaModal(item);
-                            }}
-                            className="px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-xs font-bold text-slate-700"
-                          >
-                            Edit Jadwal
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-
-            <div className="px-5 py-3.5 bg-white border-t border-slate-200 flex items-center justify-between gap-3">
-              <span className="text-xs text-slate-500">
-                Tip: Bagi PIC berbeda jika dua kegiatan wajib berjalan bersamaan.
-              </span>
-              <button
-                type="button"
-                onClick={() => setConflictPopupOpen(false)}
-                className="px-4 py-2 rounded-xl bg-[#0B2239] hover:bg-[#133254] text-white text-xs font-bold"
-              >
-                Tutup Notifikasi
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* TOAST NOTIFICATIONS */}
       {toasts.length > 0 && (
         <div className="fixed bottom-4 right-4 z-50 space-y-2 max-w-sm">
@@ -2801,7 +2747,7 @@ export default function App() {
                   ? 'bg-emerald-900 text-white border-emerald-700'
                   : t.tone === 'warning'
                   ? 'bg-amber-900 text-white border-amber-700'
-                  : 'bg-[#0B2239] text-white border-slate-700'
+                  : 'bg-[#042A20] text-white border-emerald-800'
               }`}
             >
               <span>{t.text}</span>

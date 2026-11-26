@@ -730,7 +730,7 @@ export function getEBuddyTemplates(todayISO: string) {
 
   return [
     {
-      label: 'Contoh 1: Undangan Rapat Hidrometeorologi (Bentrok Jam)',
+      label: 'Contoh 1: Undangan Rapat Hidrometeorologi',
       text: `PEMERINTAH KABUPATEN SIDOARJO — TATA NASKAH DINAS ELEKTRONIK (e-Buddy)
 Nomor Surat: 005/2194/438.1.1/2026
 Perihal: Rapat Koordinasi Hidrometeorologi & Kesiapsiagaan Banjir
