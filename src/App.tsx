@@ -27,11 +27,26 @@ import {
   XCircle,
   ArrowRight,
   SlidersHorizontal,
+  Eye,
+  EyeOff,
+  LogOut,
+  ShieldCheck,
+  Users,
+  ClipboardList,
+  Lock,
+  HelpCircle,
+  UserPlus,
 } from 'lucide-react';
 
 // ============================================================================
 // TYPES & CONSTANTS
 // ============================================================================
+
+type RoleCode =
+  | 'ROLE_SUPER_ADMIN'
+  | 'ROLE_OPERATOR'
+  | 'ROLE_DISPOSISI'
+  | 'ROLE_PIMPINAN';
 
 type AgendaCategory =
   | 'Rapat Internal'
@@ -40,13 +55,51 @@ type AgendaCategory =
   | 'Undangan Resmi'
   | 'Lainnya';
 
-type AgendaStatus = 'Terjadwal' | 'Selesai' | 'Dibatalkan';
+type AgendaStatus = 'Terjadwal' | 'Draft' | 'Selesai' | 'Dibatalkan';
 
-type ActiveView = 'harian' | 'bulanan' | 'ebuddy' | 'kartu';
+type DisposisiStatus =
+  | 'Menunggu Disposisi'
+  | 'Disetujui Pimpinan'
+  | 'Diwakilkan'
+  | 'Hadir Dikonfirmasi';
+
+type ActiveView = 'harian' | 'bulanan' | 'ebuddy' | 'kartu' | 'pengguna' | 'audit';
 
 type CardTheme = 'putih' | 'biru' | 'gelap';
 
 type CardMode = 'harian' | 'tunggal' | 'bulanan';
+
+interface UserAccount {
+  id: string;
+  nip: string;
+  username: string;
+  email: string;
+  password: string;
+  namaLengkap: string;
+  jabatan: string;
+  bidang: string;
+  roleKode: RoleCode;
+  isActive: boolean;
+  lastLogin?: string;
+}
+
+interface AuthSession {
+  userId: string;
+  remember: boolean;
+  loginAt: number;
+  expiresAt: number;
+}
+
+interface AuditLogEntry {
+  id: string;
+  timestamp: string;
+  nip: string;
+  nama: string;
+  roleKode: RoleCode | 'GUEST';
+  eventType: string;
+  status: 'SUKSES' | 'GAGAL' | 'PERINGATAN';
+  detail: string;
+}
 
 interface AgendaItem {
   id: string;
@@ -60,8 +113,12 @@ interface AgendaItem {
   nomorSurat: string;
   kategori: AgendaCategory;
   status: AgendaStatus;
+  statusDisposisi: DisposisiStatus;
+  pejabatPendamping: string;
+  isConfidential: boolean;
   catatan: string;
   sumber: 'Manual' | 'e-Buddy';
+  createdBy: string;
   createdAt: string;
 }
 
@@ -84,8 +141,43 @@ interface ExtractedEBuddyResult {
   detectedFields: string[];
 }
 
-const STORAGE_KEY = 'agenda_ebuddy_items_v1';
-const ORG_TITLE_KEY = 'agenda_ebuddy_org_title_v1';
+const STORAGE_KEY = 'siaga_bpbd_agendas_v2';
+const USERS_STORAGE_KEY = 'siaga_bpbd_users_v2';
+const AUDIT_STORAGE_KEY = 'siaga_bpbd_audit_v2';
+const SESSION_LOCAL_KEY = 'siaga_bpbd_session_local_v2';
+const SESSION_TEMP_KEY = 'siaga_bpbd_session_temp_v2';
+const ORG_TITLE_KEY = 'siaga_bpbd_org_title_v2';
+const LOCKOUT_STORAGE_KEY = 'siaga_bpbd_lockout_v2';
+
+const SESSION_DURATION_MS = 8 * 60 * 60 * 1000; // 8 jam kerja
+const MAX_FAILED_ATTEMPTS = 5;
+const LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15 menit
+
+const ROLE_META: Record<
+  RoleCode,
+  { label: string; shortLabel: string; description: string }
+> = {
+  ROLE_SUPER_ADMIN: {
+    label: 'Super Admin (Admin Sistem)',
+    shortLabel: 'Super Admin',
+    description: 'Akses penuh seluruh modul, manajemen akun, template kop, dan audit log.',
+  },
+  ROLE_OPERATOR: {
+    label: 'Operator (Pengadministrasi Umum)',
+    shortLabel: 'Operator',
+    description: 'Input & ekstrak surat e-Buddy, kelola jadwal, dan studio kartu WhatsApp.',
+  },
+  ROLE_DISPOSISI: {
+    label: 'Pejabat Disposisi (Sekretaris)',
+    shortLabel: 'Pejabat Disposisi',
+    description: 'Verifikasi bentrok, tetapkan pejabat pendamping, ubah disposisi, dan pantau log.',
+  },
+  ROLE_PIMPINAN: {
+    label: 'Pimpinan (Eksekutif / Viewer)',
+    shortLabel: 'Pimpinan',
+    description: 'Mode baca dashboard real-time, konfirmasi hadir, dan unduh kartu/rekap.',
+  },
+};
 
 const CATEGORIES: AgendaCategory[] = [
   'Rapat Internal',
@@ -93,6 +185,13 @@ const CATEGORIES: AgendaCategory[] = [
   'Kunjungan / Dinas',
   'Undangan Resmi',
   'Lainnya',
+];
+
+const DISPOSISI_STATUSES: DisposisiStatus[] = [
+  'Menunggu Disposisi',
+  'Disetujui Pimpinan',
+  'Diwakilkan',
+  'Hadir Dikonfirmasi',
 ];
 
 const HARI_ID = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
@@ -111,6 +210,89 @@ const BULAN_ID = [
   'November',
   'Desember',
 ];
+
+// ============================================================================
+// INITIAL USERS & PERMISSIONS
+// ============================================================================
+
+function createInitialUsers(): UserAccount[] {
+  return [
+    {
+      id: 'usr-1',
+      nip: '199004122015031002',
+      username: 'admin.siaga',
+      email: 'admin.siaga@sidoarjokab.go.id',
+      password: 'Bpbd2026!',
+      namaLengkap: 'Rizky Pratama, S.Kom',
+      jabatan: 'Pranata Komputer Ahli Pertama',
+      bidang: 'Sekretariat',
+      roleKode: 'ROLE_SUPER_ADMIN',
+      isActive: true,
+    },
+    {
+      id: 'usr-2',
+      nip: '199408212019032005',
+      username: 'operator.sekretariat',
+      email: 'sekretariat@sidoarjokab.go.id',
+      password: 'Bpbd2026!',
+      namaLengkap: 'Siti Aminah, A.Md',
+      jabatan: 'Pengadministrasi Umum',
+      bidang: 'Subbag Umum & Kepegawaian',
+      roleKode: 'ROLE_OPERATOR',
+      isActive: true,
+    },
+    {
+      id: 'usr-3',
+      nip: '197805152005011008',
+      username: 'sekretaris.bpbd',
+      email: 'sekretaris.bpbd@sidoarjokab.go.id',
+      password: 'Bpbd2026!',
+      namaLengkap: 'H. Agus Salim, S.Sos, M.Si',
+      jabatan: 'Sekretaris BPBD',
+      bidang: 'Sekretariat',
+      roleKode: 'ROLE_DISPOSISI',
+      isActive: true,
+    },
+    {
+      id: 'usr-4',
+      nip: '197211031998031004',
+      username: 'kalaksa.bpbd',
+      email: 'kalaksa.bpbd@sidoarjokab.go.id',
+      password: 'Bpbd2026!',
+      namaLengkap: 'Ir. Dwijo Prawito, M.T',
+      jabatan: 'Kepala Pelaksana BPBD',
+      bidang: 'Pimpinan',
+      roleKode: 'ROLE_PIMPINAN',
+      isActive: true,
+    },
+  ];
+}
+
+function getPermissions(role: RoleCode) {
+  return {
+    canCreateAgenda: role === 'ROLE_SUPER_ADMIN' || role === 'ROLE_OPERATOR',
+    canEditAgenda:
+      role === 'ROLE_SUPER_ADMIN' || role === 'ROLE_OPERATOR' || role === 'ROLE_DISPOSISI',
+    canDeleteAgenda: (item: AgendaItem) => {
+      if (role === 'ROLE_SUPER_ADMIN') return true;
+      if (role === 'ROLE_OPERATOR') {
+        return item.status === 'Draft' || item.status === 'Dibatalkan';
+      }
+      return false;
+    },
+    canUseEBuddy: role === 'ROLE_SUPER_ADMIN' || role === 'ROLE_OPERATOR',
+    canEditDisposition: role === 'ROLE_SUPER_ADMIN' || role === 'ROLE_DISPOSISI',
+    canConfirmPresence: role === 'ROLE_PIMPINAN' || role === 'ROLE_SUPER_ADMIN',
+    canOpenCardStudio:
+      role === 'ROLE_SUPER_ADMIN' || role === 'ROLE_OPERATOR' || role === 'ROLE_DISPOSISI',
+    canExportReports: true,
+    canManageUsers: role === 'ROLE_SUPER_ADMIN',
+    canViewAuditLog: role === 'ROLE_SUPER_ADMIN' || role === 'ROLE_DISPOSISI',
+    canExportAuditLog: role === 'ROLE_SUPER_ADMIN',
+    canAccessConfidential:
+      role === 'ROLE_SUPER_ADMIN' || role === 'ROLE_DISPOSISI' || role === 'ROLE_PIMPINAN',
+  };
+}
 
 // ============================================================================
 // DATE & TIME UTILITIES
@@ -174,9 +356,15 @@ function formatDurasi(start: string, end: string): string {
 
 function getConflictsForCandidate(
   agendas: AgendaItem[],
-  candidate: { id?: string; tanggal: string; jamMulai: string; jamSelesai: string; status?: AgendaStatus }
+  candidate: {
+    id?: string;
+    tanggal: string;
+    jamMulai: string;
+    jamSelesai: string;
+    status?: AgendaStatus;
+  }
 ): ConflictInfo[] {
-  if (candidate.status === 'Dibatalkan') return [];
+  if (candidate.status === 'Dibatalkan' || candidate.status === 'Draft') return [];
   const startA = timeToMinutes(candidate.jamMulai);
   const endA = timeToMinutes(candidate.jamSelesai);
   if (endA <= startA) return [];
@@ -184,7 +372,7 @@ function getConflictsForCandidate(
   const conflicts: ConflictInfo[] = [];
   for (const item of agendas) {
     if (candidate.id && item.id === candidate.id) continue;
-    if (item.status === 'Dibatalkan') continue;
+    if (item.status === 'Dibatalkan' || item.status === 'Draft') continue;
     if (item.tanggal !== candidate.tanggal) continue;
 
     const startB = timeToMinutes(item.jamMulai);
@@ -194,7 +382,9 @@ function getConflictsForCandidate(
       conflicts.push({ agenda: item, overlapMinutes });
     }
   }
-  return conflicts.sort((a, b) => timeToMinutes(a.agenda.jamMulai) - timeToMinutes(b.agenda.jamMulai));
+  return conflicts.sort(
+    (a, b) => timeToMinutes(a.agenda.jamMulai) - timeToMinutes(b.agenda.jamMulai)
+  );
 }
 
 function findNextAvailableSlot(
@@ -204,8 +394,8 @@ function findNextAvailableSlot(
   excludeId?: string
 ): { jamMulai: string; jamSelesai: string } | null {
   const safeDuration = Math.max(30, durationMinutes || 60);
-  const dayStart = 7 * 60 + 30; // 07:30
-  const dayEnd = 19 * 60; // 19:00
+  const dayStart = 7 * 60 + 30;
+  const dayEnd = 19 * 60;
 
   for (let start = dayStart; start + safeDuration <= dayEnd; start += 15) {
     const end = start + safeDuration;
@@ -224,7 +414,7 @@ function findNextAvailableSlot(
 }
 
 // ============================================================================
-// E-BUDDY OFFICIAL LETTER EXTRACTOR (CLIENT-SIDE INDONESIAN NLP/REGEX)
+// E-BUDDY OFFICIAL LETTER EXTRACTOR
 // ============================================================================
 
 const BULAN_MAP: Record<string, number> = {
@@ -247,7 +437,6 @@ function extractEBuddyText(rawText: string, defaultDate: string): ExtractedEBudd
   const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
   const detectedFields: string[] = [];
 
-  // 1. Nomor Surat
   let nomorSurat = '';
   const nomorMatch = text.match(
     /(?:Nomor(?:\s*Surat)?|No\.?\s*Surat|No\.?)\s*[:\-]\s*([A-Z0-9./\- ]{4,50})/i
@@ -263,14 +452,9 @@ function extractEBuddyText(rawText: string, defaultDate: string): ExtractedEBudd
     }
   }
 
-  // 2. Judul / Acara / Perihal
   let judul = '';
-  const acaraMatch = text.match(
-    /(?:Acara|Kegiatan|Agenda|Sub\s*Acara)\s*[:\-]\s*([^\n]+)/i
-  );
-  const halMatch = text.match(
-    /(?:Perihal|Hal)\s*[:\-]\s*([^\n]+)/i
-  );
+  const acaraMatch = text.match(/(?:Acara|Kegiatan|Agenda|Sub\s*Acara)\s*[:\-]\s*([^\n]+)/i);
+  const halMatch = text.match(/(?:Perihal|Hal)\s*[:\-]\s*([^\n]+)/i);
   const rangkaMatch = text.match(
     /(?:menghadiri|dalam rangka|mengikuti)\s+(?:acara\s+|kegiatan\s+|rapat\s+)?([^\n.;]{8,120})/i
   );
@@ -286,12 +470,13 @@ function extractEBuddyText(rawText: string, defaultDate: string): ExtractedEBudd
     detectedFields.push('Konteks Acara');
   } else if (lines.length > 0) {
     const candidateLine = lines.find(
-      (l) => l.length > 8 && !/^(Yth|Kepada|Nomor|Lampiran|Sifat|Hari|Tanggal|Pukul|Tempat|Pakaian)/i.test(l)
+      (l) =>
+        l.length > 8 &&
+        !/^(Yth|Kepada|Nomor|Lampiran|Sifat|Hari|Tanggal|Pukul|Tempat|Pakaian)/i.test(l)
     );
     if (candidateLine) judul = candidateLine.slice(0, 100);
   }
 
-  // 3. Tanggal
   let tanggal = defaultDate;
   const monthNamesPattern = Object.keys(BULAN_MAP).join('|');
   const indoDateRegex = new RegExp(
@@ -329,13 +514,14 @@ function extractEBuddyText(rawText: string, defaultDate: string): ExtractedEBudd
     detectedFields.push('Tanggal (Besok)');
   }
 
-  // 4. Jam Mulai & Jam Selesai
   let jamMulai = '09:00';
   let jamSelesai = '11:00';
   let catatanSelesai = '';
 
-  const rangeTimeRegex = /(\d{1,2})[.:](\d{2})\s*(?:WIB|WITA|WIT)?\s*(?:-|–|s\.?d\.?|s\/d|sampai(?:\s+dengan)?)\s*(\d{1,2})[.:](\d{2})/i;
-  const untilDoneRegex = /(?:Pukul|Jam|Waktu)\s*[:\-]?\s*(\d{1,2})[.:](\d{2})\s*(?:WIB|WITA|WIT)?\s*(?:-|–|s\.?d\.?|s\/d)?\s*(?:selesai|Selesai)/i;
+  const rangeTimeRegex =
+    /(\d{1,2})[.:](\d{2})\s*(?:WIB|WITA|WIT)?\s*(?:-|–|s\.?d\.?|s\/d|sampai(?:\s+dengan)?)\s*(\d{1,2})[.:](\d{2})/i;
+  const untilDoneRegex =
+    /(?:Pukul|Jam|Waktu)\s*[:\-]?\s*(\d{1,2})[.:](\d{2})\s*(?:WIB|WITA|WIT)?\s*(?:-|–|s\.?d\.?|s\/d)?\s*(?:selesai|Selesai)/i;
   const singleTimeRegex = /(?:Pukul|Jam|Waktu)\s*[:\-]?\s*(\d{1,2})[.:](\d{2})/i;
 
   const rangeMatch = text.match(rangeTimeRegex);
@@ -359,7 +545,7 @@ function extractEBuddyText(rawText: string, defaultDate: string): ExtractedEBudd
     jamMulai = `${h1}:${m1}`;
     jamSelesai = minutesToTime(timeToMinutes(jamMulai) + 120);
     catatanSelesai = 'Durasi estimasi 2 jam (surat tertulis: s.d. selesai).';
-    detectedFields.push('Waktu Mulai (s.d. selesai)');
+    detectedFields.push('Waktu Mulai');
   } else if (singleMatch) {
     const h1 = String(Math.min(23, Number(singleMatch[1]))).padStart(2, '0');
     const m1 = String(Math.min(59, Number(singleMatch[2]))).padStart(2, '0');
@@ -368,11 +554,8 @@ function extractEBuddyText(rawText: string, defaultDate: string): ExtractedEBudd
     detectedFields.push('Waktu Mulai');
   }
 
-  // 5. Lokasi / Tempat
   let lokasi = '';
-  const lokasiMatch = text.match(
-    /(?:Tempat|Lokasi|Bertempat\s+di|Ruangan)\s*[:\-]?\s*([^\n]+)/i
-  );
+  const lokasiMatch = text.match(/(?:Tempat|Lokasi|Bertempat\s+di|Ruangan)\s*[:\-]?\s*([^\n]+)/i);
   if (lokasiMatch) {
     lokasi = lokasiMatch[1].replace(/^di\s+/i, '').trim();
     detectedFields.push('Lokasi');
@@ -382,37 +565,34 @@ function extractEBuddyText(rawText: string, defaultDate: string): ExtractedEBudd
     detectedFields.push('Lokasi Daring');
   }
 
-  // 6. Pakaian / Dresscode
   let pakaian = '';
-  const pakaianMatch = text.match(
-    /(?:Pakaian|Dresscode|Seragam)\s*[:\-]\s*([^\n]+)/i
-  );
+  const pakaianMatch = text.match(/(?:Pakaian|Dresscode|Seragam)\s*[:\-]\s*([^\n]+)/i);
   if (pakaianMatch) {
     pakaian = pakaianMatch[1].trim();
     detectedFields.push('Pakaian');
   }
 
-  // 7. Penyelenggara / Disposisi
   let penyelenggara = '';
   const disposisiMatch = text.match(
     /(?:Disposisi(?:\s+Kepada)?|Penyelenggara|Pengirim|Dari|Yth\.)\s*[:\-]?\s*([^\n]+)/i
   );
   if (disposisiMatch) {
     penyelenggara = disposisiMatch[1].trim();
-    detectedFields.push('Penyelenggara / Disposisi');
+    detectedFields.push('Penyelenggara');
   }
 
-  // 8. Kategori Otomatis
   let kategori: AgendaCategory = 'Rapat Internal';
-  if (/kunjungan|tinjauan|lapangan|peresmian|monitoring|sidak/i.test(text)) {
+  if (/kunjungan|tinjauan|lapangan|peresmian|monitoring|sidak|bencana|posko/i.test(text)) {
     kategori = 'Kunjungan / Dinas';
-  } else if (/undangan|lampiran|nomor\s*[:\-]/i.test(text) && /yth\.|hormat kami|mengharap kehadiran/i.test(text)) {
+  } else if (
+    /undangan|lampiran|nomor\s*[:\-]/i.test(text) &&
+    /yth\.|hormat kami|mengharap kehadiran/i.test(text)
+  ) {
     kategori = 'Undangan Resmi';
-  } else if (/kementerian|gubernur|bupati|walikota|provinsi|mitra|zoom|eksternal|forum/i.test(text)) {
+  } else if (/kementerian|gubernur|bupati|provinsi|mitra|zoom|eksternal|forum|bnpt|bnpb/i.test(text)) {
     kategori = 'Rapat Eksternal';
   }
 
-  // 9. Catatan tambahan (Meeting ID / Link / Catatan Disposisi)
   const extraNotes: string[] = [];
   if (catatanSelesai) extraNotes.push(catatanSelesai);
   const meetingIdMatch = text.match(/(?:Meeting\s*ID|ID\s*Rapat)\s*[:\-]?\s*([0-9 \-]+)/i);
@@ -428,7 +608,7 @@ function extractEBuddyText(rawText: string, defaultDate: string): ExtractedEBudd
     jamMulai,
     jamSelesai,
     lokasi: lokasi || 'Menunggu konfirmasi tempat',
-    penyelenggara: penyelenggara || 'Sekretariat / Pimpinan',
+    penyelenggara: penyelenggara || 'Sekretariat BPBD Sidoarjo',
     pakaian: pakaian || 'Menyesuaikan',
     nomorSurat,
     kategori,
@@ -438,7 +618,7 @@ function extractEBuddyText(rawText: string, defaultDate: string): ExtractedEBudd
 }
 
 // ============================================================================
-// INITIAL SEED DATA & E-BUDDY SAMPLES
+// INITIAL SEED DATA & E-BUDDY SAMPLES (BPBD KABUPATEN SIDOARJO)
 // ============================================================================
 
 function createInitialAgendas(): AgendaItem[] {
@@ -451,114 +631,142 @@ function createInitialAgendas(): AgendaItem[] {
   return [
     {
       id: 'ag-1',
-      judul: 'Rapat Koordinasi Evaluasi Anggaran Triwulan IV',
+      judul: 'Rapat Koordinasi Kesiapsiagaan Hidrometeorologi Kab. Sidoarjo',
       tanggal: today,
       jamMulai: '08:30',
       jamSelesai: '10:30',
-      lokasi: 'Ruang Rapat Utama Lt. 2',
-      penyelenggara: 'Sekretariat Daerah',
-      pakaian: 'PDH Khaki',
-      nomorSurat: '005/1420/SETDA',
+      lokasi: 'Ruang Rapat Pusdalops BPBD Sidoarjo',
+      penyelenggara: 'Bidang Pencegahan & Kesiapsiagaan',
+      pakaian: 'PDH Khaki / Seragam BPBD',
+      nomorSurat: '360/1420/438.5.17/2026',
       kategori: 'Rapat Internal',
       status: 'Terjadwal',
-      catatan: 'Membawa laporan realisasi per bidang.',
+      statusDisposisi: 'Disetujui Pimpinan',
+      pejabatPendamping: 'Kabid PK & Tim Pusdalops',
+      isConfidential: false,
+      catatan: 'Membawa peta titik rawan genangan dan logistik aktif.',
       sumber: 'e-Buddy',
+      createdBy: 'Siti Aminah, A.Md',
       createdAt: new Date().toISOString(),
     },
     {
       id: 'ag-2',
-      judul: 'Sinkronisasi Data Layanan Publik Terpadu (Bentrok Simulasi)',
+      judul: 'Sinkronisasi Data Kebencanaan & Sistem Peringatan Dini (Bentrok Simulasi)',
       tanggal: today,
       jamMulai: '09:45',
       jamSelesai: '11:30',
-      lokasi: 'Zoom Meeting (Link Dinas Kominfo)',
-      penyelenggara: 'Dinas Kominfo · Disposisi Kabid',
+      lokasi: 'Zoom Meeting (BPBD Provinsi Jawa Timur)',
+      penyelenggara: 'BPBD Provinsi Jawa Timur',
       pakaian: 'PDH Khaki',
-      nomorSurat: '005/891/DISKOMINFO',
+      nomorSurat: '360/891/BPBD-JATIM/2026',
       kategori: 'Rapat Eksternal',
       status: 'Terjadwal',
-      catatan: 'Meeting ID: 842 9910 2211 · Passcode: KOMINFO26',
+      statusDisposisi: 'Menunggu Disposisi',
+      pejabatPendamping: 'Belum ditetapkan',
+      isConfidential: false,
+      catatan: 'Meeting ID: 842 9910 2211 · Passcode: SIAGA26',
       sumber: 'e-Buddy',
+      createdBy: 'Siti Aminah, A.Md',
       createdAt: new Date().toISOString(),
     },
     {
       id: 'ag-3',
-      judul: 'Penandatanganan Pakta Integritas & Pengarahan Staf',
+      judul: 'Rapat Terbatas Evaluasi Anggaran Belanja Tak Terduga (BTT)',
       tanggal: today,
       jamMulai: '13:30',
       jamSelesai: '15:00',
-      lokasi: 'Aula Gedung B',
-      penyelenggara: 'Bagian Organisasi & SDM',
+      lokasi: 'Ruang Rapat Pendopo Delta Wibawa',
+      penyelenggara: 'Sekretariat Daerah Kab. Sidoarjo',
       pakaian: 'Batik Lengan Panjang',
-      nomorSurat: '800/312/ORG',
+      nomorSurat: '900/312/SETDA/2026',
       kategori: 'Undangan Resmi',
       status: 'Terjadwal',
-      catatan: 'Hadir 15 menit sebelum acara dimulai.',
-      sumber: 'Manual',
+      statusDisposisi: 'Hadir Dikonfirmasi',
+      pejabatPendamping: 'Sekretaris BPBD',
+      isConfidential: true,
+      catatan: 'Agenda sifat terbatas — hanya Pimpinan & Pejabat Disposisi.',
+      sumber: 'e-Buddy',
+      createdBy: 'H. Agus Salim, S.Sos, M.Si',
       createdAt: new Date().toISOString(),
     },
     {
       id: 'ag-4',
-      judul: 'Tinjauan Lapangan Renovasi Gedung Pelayanan Terpadu',
+      judul: 'Tinjauan Lapangan Normalisasi Saluran & Posko Siaga Kecamatan',
       tanggal: tomorrow,
       jamMulai: '09:00',
       jamSelesai: '11:30',
-      lokasi: 'Kawasan Mall Pelayanan Publik',
-      penyelenggara: 'Tim Teknis Dinas PU',
-      pakaian: 'PDH / Lapangan',
-      nomorSurat: '600/119/PUPR',
+      lokasi: 'Kecamatan Waru & Taman, Kab. Sidoarjo',
+      penyelenggara: 'Bidang Kedaruratan & Logistik',
+      pakaian: 'Seragam Lapangan BPBD',
+      nomorSurat: '360/119/KL-BPBD/2026',
       kategori: 'Kunjungan / Dinas',
       status: 'Terjadwal',
-      catatan: 'Koordinasi titik akses disabilitas.',
+      statusDisposisi: 'Disetujui Pimpinan',
+      pejabatPendamping: 'Kabid KL & TRC BPBD',
+      isConfidential: false,
+      catatan: 'Koordinasi titik pompa portabel dan posko kecamatan.',
       sumber: 'e-Buddy',
+      createdBy: 'Siti Aminah, A.Md',
       createdAt: new Date().toISOString(),
     },
     {
       id: 'ag-5',
-      judul: 'Forum Konsultasi Publik Rencana Kerja Tahun 2027',
+      judul: 'Forum Koordinasi Rehabilitasi & Rekonstruksi Pasca Bencana',
       tanggal: plus2,
       jamMulai: '10:00',
       jamSelesai: '12:30',
-      lokasi: 'Ballroom Hotel Nusantara',
-      penyelenggara: 'Bappeda Provinsi',
-      pakaian: 'Batik Resmi / PSL',
-      nomorSurat: '050/774/BAPPEDA',
+      lokasi: 'Aula Kantor BPBD Jl. Raya Kemiri No. 1',
+      penyelenggara: 'Bidang Rehabilitasi & Rekonstruksi',
+      pakaian: 'Batik Resmi',
+      nomorSurat: '360/774/RR-BPBD/2026',
       kategori: 'Undangan Resmi',
-      status: 'Terjadwal',
-      catatan: 'Menyiapkan bahan paparan 10 slide.',
-      sumber: 'e-Buddy',
+      status: 'Draft',
+      statusDisposisi: 'Menunggu Disposisi',
+      pejabatPendamping: 'Kabid RR',
+      isConfidential: false,
+      catatan: 'Menunggu persetujuan jadwal final dari Sekretaris BPBD.',
+      sumber: 'Manual',
+      createdBy: 'Siti Aminah, A.Md',
       createdAt: new Date().toISOString(),
     },
     {
       id: 'ag-6',
-      judul: 'Briefing Mingguan Progres Digitalisasi Arsip e-Buddy',
+      judul: 'Briefing Mingguan Progres Digitalisasi Surat e-Buddy Sekretariat',
       tanggal: plus4,
       jamMulai: '14:00',
       jamSelesai: '15:30',
-      lokasi: 'Ruang Rapat Kecil Lt. 1',
-      penyelenggara: 'Subbag Tata Usaha',
-      pakaian: 'Bebas Rapi',
+      lokasi: 'Ruang Rapat Sekretariat Lt. 1',
+      penyelenggara: 'Subbag Umum & Kepegawaian',
+      pakaian: 'PDH / Bebas Rapi',
       nomorSurat: '',
       kategori: 'Rapat Internal',
       status: 'Terjadwal',
-      catatan: 'Evaluasi SLA surat masuk.',
+      statusDisposisi: 'Diwakilkan',
+      pejabatPendamping: 'Kasubag Umum',
+      isConfidential: false,
+      catatan: 'Evaluasi SLA penerimaan surat masuk.',
       sumber: 'Manual',
+      createdBy: 'Rizky Pratama, S.Kom',
       createdAt: new Date().toISOString(),
     },
     {
       id: 'ag-7',
-      judul: 'Rapat Finalisasi Materi Paparan Pimpinan',
+      judul: 'Apel Gelar Pasukan & Pengecekan Peralatan SAR BPBD Sidoarjo',
       tanggal: minus1,
-      jamMulai: '10:00',
-      jamSelesai: '12:00',
-      lokasi: 'Ruang Kerja Pimpinan',
-      penyelenggara: 'Tim Sekretariat',
-      pakaian: 'PDH',
-      nomorSurat: '005/1401/SETDA',
+      jamMulai: '07:30',
+      jamSelesai: '09:30',
+      lokasi: 'Halaman Mako BPBD Kab. Sidoarjo',
+      penyelenggara: 'Sekretariat BPBD Kab. Sidoarjo',
+      pakaian: 'Seragam PDL Lengkap',
+      nomorSurat: '360/1401/BPBD/2026',
       kategori: 'Rapat Internal',
       status: 'Selesai',
-      catatan: 'Notulensi telah dikirim ke grup.',
+      statusDisposisi: 'Hadir Dikonfirmasi',
+      pejabatPendamping: 'Seluruh Pejabat Struktural',
+      isConfidential: false,
+      catatan: 'Dokumentasi dan berita acara selesai.',
       sumber: 'Manual',
+      createdBy: 'Siti Aminah, A.Md',
       createdAt: new Date().toISOString(),
     },
   ];
@@ -571,45 +779,45 @@ function getEBuddyTemplates(todayISO: string) {
 
   return [
     {
-      label: 'Surat Undangan e-Buddy',
-      text: `PEMERINTAH DAERAH — TATA NASKAH DINAS ELEKTRONIK (e-Buddy)
-Nomor : 005/2048/BAPPEDA/2026
+      label: 'Undangan Rapat e-Buddy',
+      text: `PEMERINTAH KABUPATEN SIDOARJO — TATA NASKAH DINAS ELEKTRONIK (e-Buddy)
+Nomor : 360/2048/BPBD/2026
 Sifat : Penting
-Hal : Undangan Rapat Percepatan Transformasi Digital Layanan Publik
+Hal : Undangan Rapat Percepatan Desa Tangguh Bencana (Destana)
 
-Disposisi : Yth. Kepala Bagian Perencanaan & Tim IT
+Disposisi : Yth. Kepala Bidang Pencegahan & Kesiapsiagaan
 Mengharap kehadiran Bapak/Ibu pada:
 Hari/Tanggal : ${tomorrowFmt}
 Pukul : 13.00 - 15.30 WIB
-Tempat : Ruang Rapat Anggrek Lt. 3 Gedung Pusat
-Acara : Rapat Percepatan Integrasi Sistem e-Buddy & Portal Satu Data
+Tempat : Ruang Rapat Pusdalops BPBD Jl. Raya Kemiri No. 1
+Acara : Rapat Koordinasi Pembentukan Desa Tangguh Bencana Tahun 2026
 Pakaian : Batik Lengan Panjang
-Catatan : Harap membawa dokumen rekap layanan aktif.`,
+Catatan : Harap membawa dokumen rekap desa binaan.`,
     },
     {
       label: 'Disposisi Rapat Bentrok (Uji Deteksi)',
       text: `[TERUSAN e-BUDDY]
-Nomor Surat: UND-412/SETDA/XI/2026
-Dari: Asisten Pemerintahan dan Kesra
-Perihal: Rapat Desk Penyusunan Laporan Kinerja Instansi
+Nomor Surat: UND-412/SETDA-SDA/XI/2026
+Dari: Asisten Pemerintahan dan Kesra Kab. Sidoarjo
+Perihal: Rapat Desk Penyusunan Laporan Kinerja Instansi Daerah
 Hari, Tanggal: ${todayFmt}
 Waktu: 09.00 s.d. 11.00 WIB
-Lokasi: Ruang Rapat Wijaya Kusuma Lt. 2
+Lokasi: Ruang Rapat Delta Graha Setda Sidoarjo
 Seragam: PDH Khaki
-Instruksi: Mohon hadir tepat waktu atau disposisikan pejabat teknis.`,
+Instruksi: Mohon hadir tepat waktu atau disposisikan pejabat pendamping.`,
     },
     {
-      label: 'Undangan Zoom Hybrid (s.d. selesai)',
-      text: `UNDANGAN RAPAT KOORDINASI NASIONAL
-Nomor : 005/99/KEMENDAGRI/2026
-Yth. Para Sekretaris Dinas / Kepala Subbagian
-Untuk menghadiri acara Pembinaan Tata Kelola Arsip Digital Tahun 2026
+      label: 'Undangan Zoom BNPB (s.d. selesai)',
+      text: `UNDANGAN RAKORNAS PENANGGULANGAN BENCANA
+Nomor : 005/99/BNPB/2026
+Yth. Kepala Pelaksana BPBD Kabupaten/Kota se-Jawa Timur
+Untuk menghadiri acara Sinkronisasi Sistem Logistik & Peralatan Kebencanaan
 Tanggal : ${plus3Fmt}
 Jam : 10.00 WIB - selesai
 Tempat : Zoom Meeting (https://zoom.us/j/918273645)
 Meeting ID : 918 273 645
-Passcode : ARSIP26
-Dresscode : Bebas Rapi / Batik`,
+Passcode : BNPB26
+Dresscode : Seragam PDH / Batik`,
     },
   ];
 }
@@ -698,7 +906,7 @@ function renderWhatsAppCardCanvas(
   const palettes = {
     putih: {
       bg: '#F8FAFC',
-      headerBg: '#0F172A',
+      headerBg: '#0F2A4A',
       headerText: '#FFFFFF',
       headerSub: '#CBD5E1',
       cardBg: '#FFFFFF',
@@ -706,8 +914,7 @@ function renderWhatsAppCardCanvas(
       textPrimary: '#0F172A',
       textSecondary: '#475569',
       textMuted: '#64748B',
-      accent: '#1D4ED8',
-      accentSoft: '#EFF6FF',
+      accent: '#E65100',
       conflictBg: '#FEF2F2',
       conflictBorder: '#FECACA',
       conflictText: '#B91C1C',
@@ -723,8 +930,7 @@ function renderWhatsAppCardCanvas(
       textPrimary: '#F8FAFC',
       textSecondary: '#CBD5E1',
       textMuted: '#94A3B8',
-      accent: '#60A5FA',
-      accentSoft: '#1E40AF',
+      accent: '#FB923C',
       conflictBg: '#450A0A',
       conflictBorder: '#991B1B',
       conflictText: '#FCA5A5',
@@ -741,7 +947,6 @@ function renderWhatsAppCardCanvas(
       textSecondary: '#D4D4D8',
       textMuted: '#A1A1AA',
       accent: '#10B981',
-      accentSoft: '#064E3B',
       conflictBg: '#450A0A',
       conflictBorder: '#991B1B',
       conflictText: '#FCA5A5',
@@ -760,14 +965,15 @@ function renderWhatsAppCardCanvas(
   const fontSans = '"Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
   const fontMono = '"JetBrains Mono", ui-monospace, monospace';
 
-  // Calculate dynamic height first
   let itemsToRender: AgendaItem[] = [];
   if (mode === 'harian') {
-    itemsToRender = dayAgendas.filter((a) => a.status !== 'Dibatalkan');
+    itemsToRender = dayAgendas.filter((a) => a.status !== 'Dibatalkan' && a.status !== 'Draft');
   } else if (mode === 'tunggal' && singleAgenda) {
     itemsToRender = [singleAgenda];
   } else if (mode === 'bulanan') {
-    itemsToRender = monthAgendas.filter((a) => a.status !== 'Dibatalkan').slice(0, 14);
+    itemsToRender = monthAgendas
+      .filter((a) => a.status !== 'Dibatalkan' && a.status !== 'Draft')
+      .slice(0, 14);
   }
 
   let measuredBodyHeight = 0;
@@ -785,7 +991,11 @@ function renderWhatsAppCardCanvas(
     tempCtx.font = `700 38px ${fontSans}`;
     const titleLines = wrapCanvasText(tempCtx, singleAgenda.judul, contentWidth - 80);
     const conflicts = showConflictAlert ? getConflictsForCandidate(allAgendas, singleAgenda) : [];
-    const boxHeight = 460 + titleLines.length * 48 + (singleAgenda.catatan ? 90 : 0) + (conflicts.length > 0 ? 74 : 0);
+    const boxHeight =
+      500 +
+      titleLines.length * 48 +
+      (singleAgenda.catatan ? 90 : 0) +
+      (conflicts.length > 0 ? 74 : 0);
     cardLayouts.push({ item: singleAgenda, titleLines, metaLines: [], conflicts, boxHeight });
     measuredBodyHeight = boxHeight + 40;
   } else {
@@ -796,6 +1006,7 @@ function renderWhatsAppCardCanvas(
       const metaParts = [
         item.lokasi,
         item.penyelenggara,
+        item.pejabatPendamping ? `Disposisi: ${item.pejabatPendamping}` : '',
         showPakaian && item.pakaian ? `Pakaian: ${item.pakaian}` : '',
         showNomorSurat && item.nomorSurat ? `Surat: ${item.nomorSurat}` : '',
       ].filter(Boolean);
@@ -818,38 +1029,32 @@ function renderWhatsAppCardCanvas(
   const minHeight = 1080;
   const totalHeight = Math.max(minHeight, headerHeight + 44 + measuredBodyHeight + footerHeight);
 
-  // Set high-res canvas dimensions
   canvas.width = width;
   canvas.height = totalHeight;
 
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
 
-  // Background
   ctx.fillStyle = p.bg;
   ctx.fillRect(0, 0, width, totalHeight);
 
-  // Header band
   ctx.fillStyle = p.headerBg;
   ctx.fillRect(0, 0, width, headerHeight);
 
-  // Top label (Organization)
   ctx.fillStyle = p.headerSub;
   ctx.font = `600 20px ${fontSans}`;
-  ctx.fillText((orgTitle || 'AGENDA KEGIATAN HARIAN').toUpperCase(), padX, 68);
+  ctx.fillText((orgTitle || 'BPBD KABUPATEN SIDOARJO — AGENDA PIMPINAN').toUpperCase(), padX, 68);
 
-  // Main Header Title
   ctx.fillStyle = p.headerText;
   ctx.font = `700 42px ${fontSans}`;
   const mainTitle =
     mode === 'harian'
       ? formatTanggalLengkap(selectedDate)
       : mode === 'tunggal'
-      ? 'Kartu Agenda Kegiatan'
+      ? 'Kartu Agenda & Disposisi'
       : `Rekap ${BULAN_ID[selectedMonth]} ${selectedYear}`;
   ctx.fillText(mainTitle, padX, 130);
 
-  // Subtitle summary line
   ctx.fillStyle = p.headerSub;
   ctx.font = `500 22px ${fontSans}`;
   let subLine = '';
@@ -861,16 +1066,17 @@ function renderWhatsAppCardCanvas(
       conflictCount > 0 ? `${conflictCount} Jadwal Bentrok` : 'Tidak Ada Bentrok'
     }`;
   } else if (mode === 'tunggal' && singleAgenda) {
-    subLine = `${formatTanggalLengkap(singleAgenda.tanggal)}  ·  ${singleAgenda.kategori}`;
+    subLine = `${formatTanggalLengkap(singleAgenda.tanggal)}  ·  ${singleAgenda.statusDisposisi}`;
   } else {
-    const activeMonthCount = monthAgendas.filter((a) => a.status !== 'Dibatalkan').length;
+    const activeMonthCount = monthAgendas.filter(
+      (a) => a.status !== 'Dibatalkan' && a.status !== 'Draft'
+    ).length;
     subLine = `${activeMonthCount} Total Agenda Bulan Ini${
       activeMonthCount > 14 ? ' (Menampilkan 14 Agenda Pertama)' : ''
     }`;
   }
   ctx.fillText(subLine, padX, 178);
 
-  // Body rendering
   let cursorY = headerHeight + 36;
 
   if (itemsToRender.length === 0) {
@@ -924,8 +1130,11 @@ function renderWhatsAppCardCanvas(
     const rows: Array<[string, string]> = [
       ['Tempat / Lokasi', item.lokasi],
       ['Penyelenggara', item.penyelenggara],
+      ['Disposisi / Pendamping', `${item.statusDisposisi} (${item.pejabatPendamping || '-'})`],
       ...(showPakaian ? [['Pakaian', item.pakaian || '-'] as [string, string]] : []),
-      ...(showNomorSurat && item.nomorSurat ? [['Nomor Surat', item.nomorSurat] as [string, string]] : []),
+      ...(showNomorSurat && item.nomorSurat
+        ? [['Nomor Surat', item.nomorSurat] as [string, string]]
+        : []),
       ['Status', item.status],
     ];
 
@@ -936,7 +1145,7 @@ function renderWhatsAppCardCanvas(
 
       ctx.fillStyle = p.textPrimary;
       ctx.font = `600 22px ${fontSans}`;
-      ctx.fillText(val.slice(0, 48), padX + 270, innerY);
+      ctx.fillText(val.slice(0, 46), padX + 290, innerY);
       innerY += 44;
     }
 
@@ -972,7 +1181,6 @@ function renderWhatsAppCardCanvas(
       ctx.lineWidth = 2;
       ctx.stroke();
 
-      // Time column on left
       const timeX = padX + 32;
       const bodyX = padX + 225;
 
@@ -990,7 +1198,6 @@ function renderWhatsAppCardCanvas(
         ctx.fillText(formatTanggalPendek(item.tanggal), timeX, cursorY + 114);
       }
 
-      // Vertical hairline divider between time and details
       ctx.strokeStyle = p.divider;
       ctx.lineWidth = 1.5;
       ctx.beginPath();
@@ -998,7 +1205,6 @@ function renderWhatsAppCardCanvas(
       ctx.lineTo(padX + 198, cursorY + boxHeight - 24);
       ctx.stroke();
 
-      // Title
       let textY = cursorY + 50;
       ctx.fillStyle = p.textPrimary;
       ctx.font = `700 28px ${fontSans}`;
@@ -1007,7 +1213,6 @@ function renderWhatsAppCardCanvas(
         textY += 36;
       }
 
-      // Metadata lines
       textY += 6;
       ctx.fillStyle = p.textSecondary;
       ctx.font = `400 21px ${fontSans}`;
@@ -1016,7 +1221,6 @@ function renderWhatsAppCardCanvas(
         textY += 29;
       }
 
-      // Conflict warning bar inside card if overlapping
       if (conflicts.length > 0) {
         textY += 4;
         ctx.fillStyle = p.conflictText;
@@ -1032,7 +1236,6 @@ function renderWhatsAppCardCanvas(
     }
   }
 
-  // Footer
   const footerY = totalHeight - 54;
   ctx.strokeStyle = p.divider;
   ctx.lineWidth = 1.5;
@@ -1044,7 +1247,11 @@ function renderWhatsAppCardCanvas(
   ctx.fillStyle = p.textMuted;
   ctx.font = `500 20px ${fontSans}`;
   const nowStr = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
-  ctx.fillText(`Dicetak dari Agenda e-Buddy  ·  ${formatTanggalLengkap(getLocalISODate())}`, padX, footerY);
+  ctx.fillText(
+    `SIAGA-AGENDA BPBD Sidoarjo  ·  ${formatTanggalLengkap(getLocalISODate())}`,
+    padX,
+    footerY
+  );
 
   ctx.textAlign = 'right';
   ctx.font = `500 20px ${fontMono}`;
@@ -1059,6 +1266,104 @@ function renderWhatsAppCardCanvas(
 export default function App() {
   const todayISO = useMemo(() => getLocalISODate(), []);
 
+  // Users State
+  const [users, setUsers] = useState<UserAccount[]>(() => {
+    try {
+      const saved = localStorage.getItem(USERS_STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {
+      // ignore
+    }
+    return createInitialUsers();
+  });
+
+  // Audit Log State (Append-only)
+  const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>(() => {
+    try {
+      const saved = localStorage.getItem(AUDIT_STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {
+      // ignore
+    }
+    return [
+      {
+        id: 'log-init',
+        timestamp: new Date().toISOString(),
+        nip: '199004122015031002',
+        nama: 'Rizky Pratama, S.Kom',
+        roleKode: 'ROLE_SUPER_ADMIN',
+        eventType: 'INISIALISASI_SISTEM',
+        status: 'SUKSES',
+        detail: 'Sistem SIAGA-AGENDA BPBD Kabupaten Sidoarjo siap digunakan.',
+      },
+    ];
+  });
+
+  // Auth Session State
+  const [session, setSession] = useState<AuthSession | null>(() => {
+    try {
+      const raw =
+        localStorage.getItem(SESSION_LOCAL_KEY) || sessionStorage.getItem(SESSION_TEMP_KEY);
+      if (!raw) return null;
+      const parsed: AuthSession = JSON.parse(raw);
+      if (parsed.expiresAt && Date.now() > parsed.expiresAt) {
+        localStorage.removeItem(SESSION_LOCAL_KEY);
+        sessionStorage.removeItem(SESSION_TEMP_KEY);
+        return null;
+      }
+      return parsed;
+    } catch {
+      return null;
+    }
+  });
+
+  const currentUser = useMemo(() => {
+    if (!session) return null;
+    return users.find((u) => u.id === session.userId && u.isActive) || null;
+  }, [session, users]);
+
+  // Login Form State
+  const [loginIdentity, setLoginIdentity] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [rememberSession, setRememberSession] = useState(true);
+  const [loginError, setLoginError] = useState('');
+  const [showForgotHelp, setShowForgotHelp] = useState(false);
+  const [showDemoPanel, setShowDemoPanel] = useState(false);
+  const [demoFilledNotice, setDemoFilledNotice] = useState('');
+  const [failedAttempts, setFailedAttempts] = useState<number>(() => {
+    try {
+      const raw = localStorage.getItem(LOCKOUT_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        return parsed.count || 0;
+      }
+    } catch {
+      // ignore
+    }
+    return 0;
+  });
+  const [lockoutUntil, setLockoutUntil] = useState<number>(() => {
+    try {
+      const raw = localStorage.getItem(LOCKOUT_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        return parsed.until || 0;
+      }
+    } catch {
+      // ignore
+    }
+    return 0;
+  });
+  const [nowTick, setNowTick] = useState(() => Date.now());
+
+  // Agendas & Org Title State
   const [agendas, setAgendas] = useState<AgendaItem[]>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
@@ -1067,36 +1372,33 @@ export default function App() {
         if (Array.isArray(parsed) && parsed.length > 0) return parsed;
       }
     } catch {
-      // fallback to seed
+      // ignore
     }
     return createInitialAgendas();
   });
 
   const [orgTitle, setOrgTitle] = useState<string>(() => {
     try {
-      return localStorage.getItem(ORG_TITLE_KEY) || 'AGENDA KEGIATAN SEKRETARIAT';
+      return localStorage.getItem(ORG_TITLE_KEY) || 'BPBD KABUPATEN SIDOARJO — AGENDA PIMPINAN';
     } catch {
-      return 'AGENDA KEGIATAN SEKRETARIAT';
+      return 'BPBD KABUPATEN SIDOARJO — AGENDA PIMPINAN';
     }
   });
 
+  // Active Navigation & Filters
   const [activeView, setActiveView] = useState<ActiveView>('harian');
   const [selectedDate, setSelectedDate] = useState<string>(todayISO);
   const [selectedMonth, setSelectedMonth] = useState<number>(() => new Date().getMonth());
   const [selectedYear, setSelectedYear] = useState<number>(() => new Date().getFullYear());
-
-  // Filters
   const [searchQuery, setSearchQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<'Semua' | AgendaCategory>('Semua');
   const [monthlyOnlyConflict, setMonthlyOnlyConflict] = useState(false);
-
-  // Mobile sidebar state
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
-  // Add/Edit Modal state
+  // Add/Edit Agenda Modal
   const [modalOpen, setModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [formState, setFormState] = useState<Omit<AgendaItem, 'id' | 'createdAt'>>({
+  const [formState, setFormState] = useState<Omit<AgendaItem, 'id' | 'createdAt' | 'createdBy'>>({
     judul: '',
     tanggal: todayISO,
     jamMulai: '09:00',
@@ -1107,37 +1409,79 @@ export default function App() {
     nomorSurat: '',
     kategori: 'Rapat Internal',
     status: 'Terjadwal',
+    statusDisposisi: 'Menunggu Disposisi',
+    pejabatPendamping: '',
+    isConfidential: false,
     catatan: '',
     sumber: 'Manual',
   });
   const [formError, setFormError] = useState('');
 
-  // Inline delete confirmation ID
-  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
-  const [confirmResetOpen, setConfirmResetOpen] = useState(false);
+  // Disposisi Quick Modal
+  const [disposisiModalItem, setDisposisiModalItem] = useState<AgendaItem | null>(null);
+  const [disposisiDraftStatus, setDisposisiDraftStatus] =
+    useState<DisposisiStatus>('Disetujui Pimpinan');
+  const [disposisiDraftPejabat, setDisposisiDraftPejabat] = useState('');
 
-  // e-Buddy Extractor state
+  // User Management Modal (Super Admin)
+  const [userModalOpen, setUserModalOpen] = useState(false);
+  const [editingUserId, setEditingUserId] = useState<string | null>(null);
+  const [userForm, setUserForm] = useState<Omit<UserAccount, 'id'>>({
+    nip: '',
+    username: '',
+    email: '',
+    password: '',
+    namaLengkap: '',
+    jabatan: '',
+    bidang: 'Sekretariat',
+    roleKode: 'ROLE_OPERATOR',
+    isActive: true,
+  });
+  const [userFormError, setUserFormError] = useState('');
+
+  // Inline confirm & toast
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [confirmDeleteUserId, setConfirmDeleteUserId] = useState<string | null>(null);
+  const [confirmResetOpen, setConfirmResetOpen] = useState(false);
+  const [copiedToast, setCopiedToast] = useState<string | null>(null);
+
+  // e-Buddy Extractor State
   const [ebuddyRawText, setEbuddyRawText] = useState('');
   const [ebuddyPreview, setEbuddyPreview] = useState<ExtractedEBuddyResult | null>(null);
 
-  // WhatsApp PNG Card Studio state
+  // WhatsApp PNG Card Studio State
   const [cardMode, setCardMode] = useState<CardMode>('harian');
   const [cardTheme, setCardTheme] = useState<CardTheme>('putih');
   const [cardSingleId, setCardSingleId] = useState<string>('');
   const [showPakaianOnCard, setShowPakaianOnCard] = useState(true);
   const [showSuratOnCard, setShowSuratOnCard] = useState(true);
   const [showConflictOnCard, setShowConflictOnCard] = useState(true);
-  const [copiedToast, setCopiedToast] = useState<string | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  // Persist to localStorage
+  // Persist states
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(agendas));
     } catch {
-      // ignore storage quota errors
+      // ignore
     }
   }, [agendas]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(users));
+    } catch {
+      // ignore
+    }
+  }, [users]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(AUDIT_STORAGE_KEY, JSON.stringify(auditLogs.slice(0, 200)));
+    } catch {
+      // ignore
+    }
+  }, [auditLogs]);
 
   useEffect(() => {
     try {
@@ -1147,14 +1491,79 @@ export default function App() {
     }
   }, [orgTitle]);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        LOCKOUT_STORAGE_KEY,
+        JSON.stringify({ count: failedAttempts, until: lockoutUntil })
+      );
+    } catch {
+      // ignore
+    }
+  }, [failedAttempts, lockoutUntil]);
+
+  // Countdown tick for brute-force lockout & idle session timeout check
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const now = Date.now();
+      setNowTick(now);
+      if (lockoutUntil > 0 && now >= lockoutUntil) {
+        setLockoutUntil(0);
+        setFailedAttempts(0);
+      }
+      if (session && session.expiresAt && now > session.expiresAt) {
+        localStorage.removeItem(SESSION_LOCAL_KEY);
+        sessionStorage.removeItem(SESSION_TEMP_KEY);
+        setSession(null);
+      }
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [lockoutUntil, session]);
+
   const showNotice = useCallback((msg: string) => {
     setCopiedToast(msg);
     setTimeout(() => setCopiedToast(null), 2600);
   }, []);
 
+  const appendAuditLog = useCallback(
+    (
+      eventType: string,
+      status: 'SUKSES' | 'GAGAL' | 'PERINGATAN',
+      detail: string,
+      actor?: { nip: string; nama: string; roleKode: RoleCode | 'GUEST' }
+    ) => {
+      const entry: AuditLogEntry = {
+        id: `log-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        timestamp: new Date().toISOString(),
+        nip: actor?.nip || currentUser?.nip || '-',
+        nama: actor?.nama || currentUser?.namaLengkap || 'Anonim',
+        roleKode: actor?.roleKode || currentUser?.roleKode || 'GUEST',
+        eventType,
+        status,
+        detail,
+      };
+      setAuditLogs((prev) => [entry, ...prev].slice(0, 200));
+    },
+    [currentUser]
+  );
+
+  // Permissions for active user
+  const perms = useMemo(() => {
+    return getPermissions(currentUser?.roleKode || 'ROLE_PIMPINAN');
+  }, [currentUser]);
+
+  // Visible agendas honoring Row-Level Security (isConfidential)
+  const visibleAgendas = useMemo(() => {
+    if (!currentUser) return [];
+    if (perms.canAccessConfidential) return agendas;
+    return agendas.filter(
+      (a) => !a.isConfidential || a.createdBy === currentUser.namaLengkap
+    );
+  }, [agendas, currentUser, perms.canAccessConfidential]);
+
   // Derived collections
   const dayAgendas = useMemo(() => {
-    return agendas
+    return visibleAgendas
       .filter((a) => a.tanggal === selectedDate)
       .filter((a) => (categoryFilter === 'Semua' ? true : a.kategori === categoryFilter))
       .filter((a) => {
@@ -1164,25 +1573,28 @@ export default function App() {
           a.judul.toLowerCase().includes(q) ||
           a.lokasi.toLowerCase().includes(q) ||
           a.penyelenggara.toLowerCase().includes(q) ||
-          a.nomorSurat.toLowerCase().includes(q)
+          a.nomorSurat.toLowerCase().includes(q) ||
+          a.pejabatPendamping.toLowerCase().includes(q)
         );
       })
       .sort((a, b) => timeToMinutes(a.jamMulai) - timeToMinutes(b.jamMulai));
-  }, [agendas, selectedDate, categoryFilter, searchQuery]);
+  }, [visibleAgendas, selectedDate, categoryFilter, searchQuery]);
 
   const allDayAgendasUnfiltered = useMemo(() => {
-    return agendas
+    return visibleAgendas
       .filter((a) => a.tanggal === selectedDate)
       .sort((a, b) => timeToMinutes(a.jamMulai) - timeToMinutes(b.jamMulai));
-  }, [agendas, selectedDate]);
+  }, [visibleAgendas, selectedDate]);
 
   const dayStats = useMemo(() => {
-    const active = allDayAgendasUnfiltered.filter((a) => a.status !== 'Dibatalkan');
+    const active = allDayAgendasUnfiltered.filter(
+      (a) => a.status !== 'Dibatalkan' && a.status !== 'Draft'
+    );
     let totalMinutes = 0;
     let conflictCount = 0;
     for (const item of active) {
       totalMinutes += Math.max(0, timeToMinutes(item.jamSelesai) - timeToMinutes(item.jamMulai));
-      if (getConflictsForCandidate(agendas, item).length > 0) {
+      if (getConflictsForCandidate(visibleAgendas, item).length > 0) {
         conflictCount++;
       }
     }
@@ -1194,26 +1606,26 @@ export default function App() {
       conflictCount,
       selesaiCount,
     };
-  }, [allDayAgendasUnfiltered, agendas]);
+  }, [allDayAgendasUnfiltered, visibleAgendas]);
 
   const monthPrefix = useMemo(() => {
     return `${selectedYear}-${String(selectedMonth + 1).padStart(2, '0')}`;
   }, [selectedYear, selectedMonth]);
 
   const monthAgendas = useMemo(() => {
-    return agendas
+    return visibleAgendas
       .filter((a) => a.tanggal.startsWith(monthPrefix))
       .sort((a, b) => {
         if (a.tanggal !== b.tanggal) return a.tanggal.localeCompare(b.tanggal);
         return timeToMinutes(a.jamMulai) - timeToMinutes(b.jamMulai);
       });
-  }, [agendas, monthPrefix]);
+  }, [visibleAgendas, monthPrefix]);
 
   const filteredMonthAgendas = useMemo(() => {
     return monthAgendas
       .filter((a) => (categoryFilter === 'Semua' ? true : a.kategori === categoryFilter))
       .filter((a) =>
-        monthlyOnlyConflict ? getConflictsForCandidate(agendas, a).length > 0 : true
+        monthlyOnlyConflict ? getConflictsForCandidate(visibleAgendas, a).length > 0 : true
       )
       .filter((a) => {
         if (!searchQuery.trim()) return true;
@@ -1225,11 +1637,13 @@ export default function App() {
           a.nomorSurat.toLowerCase().includes(q)
         );
       });
-  }, [monthAgendas, categoryFilter, monthlyOnlyConflict, searchQuery, agendas]);
+  }, [monthAgendas, categoryFilter, monthlyOnlyConflict, searchQuery, visibleAgendas]);
 
   const monthStats = useMemo(() => {
-    const active = monthAgendas.filter((a) => a.status !== 'Dibatalkan');
-    const conflictItems = active.filter((a) => getConflictsForCandidate(agendas, a).length > 0);
+    const active = monthAgendas.filter((a) => a.status !== 'Dibatalkan' && a.status !== 'Draft');
+    const conflictItems = active.filter(
+      (a) => getConflictsForCandidate(visibleAgendas, a).length > 0
+    );
     const totalMinutes = active.reduce(
       (sum, a) => sum + Math.max(0, timeToMinutes(a.jamSelesai) - timeToMinutes(a.jamMulai)),
       0
@@ -1241,16 +1655,17 @@ export default function App() {
       hours: Math.round(totalMinutes / 60),
       uniqueDays,
     };
-  }, [monthAgendas, agendas]);
+  }, [monthAgendas, visibleAgendas]);
 
-  // Global conflict count for sidebar badge (unboxed text)
   const totalGlobalConflicts = useMemo(() => {
-    return agendas.filter(
-      (a) => a.status !== 'Dibatalkan' && getConflictsForCandidate(agendas, a).length > 0
+    return visibleAgendas.filter(
+      (a) =>
+        a.status !== 'Dibatalkan' &&
+        a.status !== 'Draft' &&
+        getConflictsForCandidate(visibleAgendas, a).length > 0
     ).length;
-  }, [agendas]);
+  }, [visibleAgendas]);
 
-  // Live conflicts in Add/Edit Form
   const formConflicts = useMemo(() => {
     return getConflictsForCandidate(agendas, {
       id: editingId || undefined,
@@ -1261,7 +1676,6 @@ export default function App() {
     });
   }, [agendas, editingId, formState.tanggal, formState.jamMulai, formState.jamSelesai, formState.status]);
 
-  // Live conflicts in e-Buddy preview
   const ebuddyConflicts = useMemo(() => {
     if (!ebuddyPreview) return [];
     return getConflictsForCandidate(agendas, {
@@ -1272,17 +1686,16 @@ export default function App() {
     });
   }, [agendas, ebuddyPreview]);
 
-  // Ensure cardSingleId defaults to something valid
   useEffect(() => {
-    if (!cardSingleId && agendas.length > 0) {
-      setCardSingleId(agendas[0].id);
+    if (!cardSingleId && visibleAgendas.length > 0) {
+      setCardSingleId(visibleAgendas[0].id);
     }
-  }, [agendas, cardSingleId]);
+  }, [visibleAgendas, cardSingleId]);
 
-  // Render WhatsApp PNG Canvas whenever studio inputs change
   useEffect(() => {
-    if (activeView !== 'kartu' || !canvasRef.current) return;
-    const singleAgenda = agendas.find((a) => a.id === cardSingleId) || agendas[0] || null;
+    if (!currentUser || activeView !== 'kartu' || !canvasRef.current) return;
+    const singleAgenda =
+      visibleAgendas.find((a) => a.id === cardSingleId) || visibleAgendas[0] || null;
     renderWhatsAppCardCanvas(canvasRef.current, {
       mode: cardMode,
       theme: cardTheme,
@@ -1293,12 +1706,13 @@ export default function App() {
       dayAgendas: allDayAgendasUnfiltered,
       singleAgenda,
       monthAgendas,
-      allAgendas: agendas,
+      allAgendas: visibleAgendas,
       showPakaian: showPakaianOnCard,
       showNomorSurat: showSuratOnCard,
       showConflictAlert: showConflictOnCard,
     });
   }, [
+    currentUser,
     activeView,
     cardMode,
     cardTheme,
@@ -1309,17 +1723,184 @@ export default function App() {
     allDayAgendasUnfiltered,
     cardSingleId,
     monthAgendas,
-    agendas,
+    visibleAgendas,
     showPakaianOnCard,
     showSuratOnCard,
     showConflictOnCard,
   ]);
 
   // ============================================================================
-  // HANDLERS
+  // AUTHENTICATION HANDLERS
+  // ============================================================================
+
+  function completeUserLogin(matchedUser: UserAccount, remember: boolean, methodLabel: string) {
+    const now = Date.now();
+    const newSession: AuthSession = {
+      userId: matchedUser.id,
+      remember,
+      loginAt: now,
+      expiresAt: now + SESSION_DURATION_MS,
+    };
+
+    if (remember) {
+      localStorage.setItem(SESSION_LOCAL_KEY, JSON.stringify(newSession));
+      sessionStorage.removeItem(SESSION_TEMP_KEY);
+    } else {
+      sessionStorage.setItem(SESSION_TEMP_KEY, JSON.stringify(newSession));
+      localStorage.removeItem(SESSION_LOCAL_KEY);
+    }
+
+    setUsers((prev) =>
+      prev.map((u) =>
+        u.id === matchedUser.id ? { ...u, lastLogin: new Date().toISOString() } : u
+      )
+    );
+    setSession(newSession);
+    setFailedAttempts(0);
+    setLockoutUntil(0);
+    setLoginError('');
+    setLoginPassword('');
+
+    // Pengalihan berbasis role sesuai spesifikasi RBAC 1.2
+    if (matchedUser.roleKode === 'ROLE_OPERATOR') {
+      setActiveView('ebuddy');
+    } else {
+      setActiveView('harian');
+    }
+
+    appendAuditLog(
+      'LOGIN_BERHASIL',
+      'SUKSES',
+      `Masuk melalui ${methodLabel} (${ROLE_META[matchedUser.roleKode].shortLabel}).`,
+      {
+        nip: matchedUser.nip,
+        nama: matchedUser.namaLengkap,
+        roleKode: matchedUser.roleKode,
+      }
+    );
+    showNotice(`Selamat datang, ${matchedUser.namaLengkap}.`);
+  }
+
+  function handleLoginSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setLoginError('');
+
+    if (lockoutUntil > Date.now()) {
+      const sisaDetik = Math.ceil((lockoutUntil - Date.now()) / 1000);
+      const menit = Math.floor(sisaDetik / 60);
+      const detik = sisaDetik % 60;
+      setLoginError(
+        `Akun dikunci sementara selama 15 menit karena 5 kali kesalahan sandi. Coba lagi dalam ${menit}m ${detik}d.`
+      );
+      return;
+    }
+
+    const identity = loginIdentity.trim().toLowerCase();
+    const password = loginPassword;
+
+    if (!identity) {
+      setLoginError('Masukkan 18 digit NIP, username, atau email dinas (@sidoarjokab.go.id).');
+      return;
+    }
+    if (!password || password.length < 8) {
+      setLoginError('Kata sandi minimal 8 karakter kombinasi huruf & angka.');
+      return;
+    }
+
+    const matched = users.find(
+      (u) =>
+        u.nip.toLowerCase() === identity ||
+        u.username.toLowerCase() === identity ||
+        u.email.toLowerCase() === identity
+    );
+
+    if (!matched || matched.password !== password) {
+      const nextCount = failedAttempts + 1;
+      setFailedAttempts(nextCount);
+      if (nextCount >= MAX_FAILED_ATTEMPTS) {
+        const until = Date.now() + LOCKOUT_DURATION_MS;
+        setLockoutUntil(until);
+        appendAuditLog(
+          'AKUN_TERKUNCI',
+          'PERINGATAN',
+          `Proteksi brute-force aktif setelah 5x gagal login untuk identitas "${loginIdentity.trim()}".`,
+          { nip: matched?.nip || loginIdentity.trim(), nama: matched?.namaLengkap || 'Tidak Dikenal', roleKode: matched?.roleKode || 'GUEST' }
+        );
+        setLoginError(
+          'Terlalu banyak percobaan gagal (5x). Akses masuk dikunci sementara selama 15 menit dan dicatat di Audit Log.'
+        );
+      } else {
+        appendAuditLog(
+          'LOGIN_GAGAL',
+          'GAGAL',
+          `Percobaan gagal (${nextCount}/${MAX_FAILED_ATTEMPTS}) untuk identitas "${loginIdentity.trim()}".`,
+          { nip: loginIdentity.trim(), nama: matched?.namaLengkap || 'Tidak Dikenal', roleKode: matched?.roleKode || 'GUEST' }
+        );
+        setLoginError(
+          `NIP/Username atau kata sandi tidak sesuai. Sisa percobaan: ${
+            MAX_FAILED_ATTEMPTS - nextCount
+          } kali.`
+        );
+      }
+      return;
+    }
+
+    if (!matched.isActive) {
+      appendAuditLog(
+        'LOGIN_DITOLAK',
+        'PERINGATAN',
+        `Akun non-aktif (${matched.nip}) mencoba masuk.`,
+        { nip: matched.nip, nama: matched.namaLengkap, roleKode: matched.roleKode }
+      );
+      setLoginError('Akun ASN ini berstatus non-aktif. Hubungi Super Admin Sekretariat.');
+      return;
+    }
+
+    completeUserLogin(matched, rememberSession, 'Kredensial NIP/Sandi');
+  }
+
+  function handleFillDemoCredentials(role: RoleCode) {
+    const demoUser = users.find((u) => u.roleKode === role && u.isActive);
+    if (!demoUser) {
+      setLoginError(`Tidak ditemukan akun aktif untuk peran ${ROLE_META[role].shortLabel}.`);
+      return;
+    }
+    setLoginIdentity(demoUser.username);
+    setLoginPassword(demoUser.password);
+    setLoginError('');
+    setDemoFilledNotice(
+      `User dan kata sandi ${ROLE_META[role].shortLabel} telah diisi. Klik "MASUK KE DASHBOARD SIAGA BPBD" untuk masuk.`
+    );
+  }
+
+  function handleLogout() {
+    if (currentUser) {
+      appendAuditLog(
+        'LOGOUT',
+        'SUKSES',
+        `Pengguna keluar dari sistem SIAGA-AGENDA.`,
+        {
+          nip: currentUser.nip,
+          nama: currentUser.namaLengkap,
+          roleKode: currentUser.roleKode,
+        }
+      );
+    }
+    localStorage.removeItem(SESSION_LOCAL_KEY);
+    sessionStorage.removeItem(SESSION_TEMP_KEY);
+    setSession(null);
+    setActiveView('harian');
+    setMobileNavOpen(false);
+    setDemoFilledNotice('');
+    setShowDemoPanel(false);
+  }
+
+  // ============================================================================
+  // AGENDA & DISPOSISI HANDLERS
   // ============================================================================
 
   function openAddModal(presetDate?: string) {
+    if (!perms.canCreateAgenda) return;
     setEditingId(null);
     setFormError('');
     setFormState({
@@ -1333,6 +1914,9 @@ export default function App() {
       nomorSurat: '',
       kategori: 'Rapat Internal',
       status: 'Terjadwal',
+      statusDisposisi: 'Menunggu Disposisi',
+      pejabatPendamping: '',
+      isConfidential: false,
       catatan: '',
       sumber: 'Manual',
     });
@@ -1340,6 +1924,7 @@ export default function App() {
   }
 
   function openEditModal(item: AgendaItem) {
+    if (!perms.canEditAgenda) return;
     setEditingId(item.id);
     setFormError('');
     setFormState({
@@ -1353,6 +1938,9 @@ export default function App() {
       nomorSurat: item.nomorSurat,
       kategori: item.kategori,
       status: item.status,
+      statusDisposisi: item.statusDisposisi,
+      pejabatPendamping: item.pejabatPendamping,
+      isConfidential: item.isConfidential,
       catatan: item.catatan,
       sumber: item.sumber,
     });
@@ -1378,35 +1966,102 @@ export default function App() {
       setAgendas((prev) =>
         prev.map((item) => (item.id === editingId ? { ...item, ...formState } : item))
       );
+      appendAuditLog('EDIT_AGENDA', 'SUKSES', `Memperbarui agenda "${formState.judul}".`);
       showNotice('Agenda berhasil diperbarui.');
     } else {
       const newItem: AgendaItem = {
         ...formState,
         id: `ag-${Date.now()}`,
+        createdBy: currentUser?.namaLengkap || 'Operator',
         createdAt: new Date().toISOString(),
       };
       setAgendas((prev) => [...prev, newItem]);
       setSelectedDate(formState.tanggal);
+      appendAuditLog(
+        'TAMBAH_AGENDA',
+        'SUKSES',
+        `Menambahkan agenda "${newItem.judul}" pada ${newItem.tanggal} (${newItem.jamMulai}-${newItem.jamSelesai}).`
+      );
       showNotice('Agenda baru ditambahkan.');
     }
     setModalOpen(false);
   }
 
-  function handleDeleteAgenda(id: string) {
-    setAgendas((prev) => prev.filter((a) => a.id !== id));
+  function handleDeleteAgenda(item: AgendaItem) {
+    if (!perms.canDeleteAgenda(item)) {
+      showNotice('Peran Anda hanya diizinkan menghapus agenda berstatus Draft atau Dibatalkan.');
+      return;
+    }
+    setAgendas((prev) => prev.filter((a) => a.id !== item.id));
     setConfirmDeleteId(null);
+    appendAuditLog('HAPUS_AGENDA', 'PERINGATAN', `Menghapus agenda "${item.judul}".`);
     showNotice('Agenda dihapus.');
   }
 
   function handleToggleStatus(item: AgendaItem) {
+    if (!perms.canEditAgenda) return;
     const nextStatus: AgendaStatus = item.status === 'Selesai' ? 'Terjadwal' : 'Selesai';
     setAgendas((prev) =>
       prev.map((a) => (a.id === item.id ? { ...a, status: nextStatus } : a))
     );
+    appendAuditLog(
+      'UBAH_STATUS_AGENDA',
+      'SUKSES',
+      `Status "${item.judul}" diubah menjadi ${nextStatus}.`
+    );
+  }
+
+  function handleConfirmPimpinanPresence(item: AgendaItem) {
+    if (!perms.canConfirmPresence) return;
+    setAgendas((prev) =>
+      prev.map((a) =>
+        a.id === item.id ? { ...a, statusDisposisi: 'Hadir Dikonfirmasi' } : a
+      )
+    );
+    appendAuditLog(
+      'KONFIRMASI_HADIR',
+      'SUKSES',
+      `Pimpinan mengonfirmasi kehadiran pada "${item.judul}".`
+    );
+    showNotice('Kehadiran pimpinan dikonfirmasi.');
+  }
+
+  function openDisposisiModal(item: AgendaItem) {
+    setDisposisiModalItem(item);
+    setDisposisiDraftStatus(item.statusDisposisi);
+    setDisposisiDraftPejabat(item.pejabatPendamping);
+  }
+
+  function handleSaveDisposisi(e: React.FormEvent) {
+    e.preventDefault();
+    if (!disposisiModalItem || !perms.canEditDisposition) return;
+    setAgendas((prev) =>
+      prev.map((a) =>
+        a.id === disposisiModalItem.id
+          ? {
+              ...a,
+              statusDisposisi: disposisiDraftStatus,
+              pejabatPendamping: disposisiDraftPejabat.trim() || '-',
+            }
+          : a
+      )
+    );
+    appendAuditLog(
+      'DISPOSISI_AGENDA',
+      'SUKSES',
+      `Disposisi "${disposisiModalItem.judul}" -> ${disposisiDraftStatus} (${
+        disposisiDraftPejabat.trim() || '-'
+      }).`
+    );
+    setDisposisiModalItem(null);
+    showNotice('Status disposisi & pendamping disimpan.');
   }
 
   function handleApplyNextSlotInForm() {
-    const dur = Math.max(30, timeToMinutes(formState.jamSelesai) - timeToMinutes(formState.jamMulai));
+    const dur = Math.max(
+      30,
+      timeToMinutes(formState.jamSelesai) - timeToMinutes(formState.jamMulai)
+    );
     const slot = findNextAvailableSlot(agendas, formState.tanggal, dur, editingId || undefined);
     if (slot) {
       setFormState((prev) => ({ ...prev, jamMulai: slot.jamMulai, jamSelesai: slot.jamSelesai }));
@@ -1416,6 +2071,10 @@ export default function App() {
     }
   }
 
+  // ============================================================================
+  // E-BUDDY HANDLERS
+  // ============================================================================
+
   function handleExtractEBuddy(rawInput?: string) {
     const source = typeof rawInput === 'string' ? rawInput : ebuddyRawText;
     if (!source.trim()) return;
@@ -1424,7 +2083,7 @@ export default function App() {
   }
 
   function handleSaveEBuddyToAgenda() {
-    if (!ebuddyPreview) return;
+    if (!ebuddyPreview || !perms.canUseEBuddy) return;
     if (timeToMinutes(ebuddyPreview.jamSelesai) <= timeToMinutes(ebuddyPreview.jamMulai)) {
       showNotice('Perbaiki jam selesai agar lebih akhir dari jam mulai.');
       return;
@@ -1441,8 +2100,12 @@ export default function App() {
       nomorSurat: ebuddyPreview.nomorSurat.trim(),
       kategori: ebuddyPreview.kategori,
       status: 'Terjadwal',
+      statusDisposisi: 'Menunggu Disposisi',
+      pejabatPendamping: 'Menunggu arahan Sekretaris',
+      isConfidential: false,
       catatan: ebuddyPreview.catatan.trim(),
       sumber: 'e-Buddy',
+      createdBy: currentUser?.namaLengkap || 'Operator',
       createdAt: new Date().toISOString(),
     };
     setAgendas((prev) => [...prev, newItem]);
@@ -1450,6 +2113,11 @@ export default function App() {
     setActiveView('harian');
     setEbuddyRawText('');
     setEbuddyPreview(null);
+    appendAuditLog(
+      'EKSTRAK_EBUDDY',
+      'SUKSES',
+      `Menyimpan surat e-Buddy "${newItem.judul}" (${newItem.nomorSurat || 'Tanpa Nomor'}).`
+    );
     showNotice('Hasil ekstraksi e-Buddy disimpan ke jadwal.');
   }
 
@@ -1472,11 +2140,119 @@ export default function App() {
     }
   }
 
-  function handleDownloadPNG(customMode?: CardMode, customDate?: string, customSingleItem?: AgendaItem) {
+  // ============================================================================
+  // USER MANAGEMENT HANDLERS (SUPER ADMIN)
+  // ============================================================================
+
+  function openAddUserModal() {
+    setEditingUserId(null);
+    setUserFormError('');
+    setUserForm({
+      nip: '',
+      username: '',
+      email: '',
+      password: 'Bpbd2026!',
+      namaLengkap: '',
+      jabatan: '',
+      bidang: 'Sekretariat',
+      roleKode: 'ROLE_OPERATOR',
+      isActive: true,
+    });
+    setUserModalOpen(true);
+  }
+
+  function openEditUserModal(u: UserAccount) {
+    setEditingUserId(u.id);
+    setUserFormError('');
+    setUserForm({
+      nip: u.nip,
+      username: u.username,
+      email: u.email,
+      password: u.password,
+      namaLengkap: u.namaLengkap,
+      jabatan: u.jabatan,
+      bidang: u.bidang,
+      roleKode: u.roleKode,
+      isActive: u.isActive,
+    });
+    setUserModalOpen(true);
+  }
+
+  function handleSaveUser(e: React.FormEvent) {
+    e.preventDefault();
+    if (!perms.canManageUsers) return;
+    if (!userForm.nip.trim() || !userForm.namaLengkap.trim() || !userForm.username.trim()) {
+      setUserFormError('NIP, Username, dan Nama Lengkap wajib diisi.');
+      return;
+    }
+    if (userForm.password.length < 8) {
+      setUserFormError('Kata sandi minimal 8 karakter.');
+      return;
+    }
+
+    if (editingUserId) {
+      setUsers((prev) =>
+        prev.map((u) => (u.id === editingUserId ? { ...u, ...userForm } : u))
+      );
+      appendAuditLog(
+        'UBAH_PENGGUNA',
+        'SUKSES',
+        `Memperbarui akun ${userForm.namaLengkap} (${ROLE_META[userForm.roleKode].shortLabel}).`
+      );
+      showNotice('Data akun ASN diperbarui.');
+    } else {
+      const newUsr: UserAccount = {
+        ...userForm,
+        id: `usr-${Date.now()}`,
+      };
+      setUsers((prev) => [...prev, newUsr]);
+      appendAuditLog(
+        'TAMBAH_PENGGUNA',
+        'SUKSES',
+        `Menambahkan akun baru ${newUsr.namaLengkap} (${ROLE_META[newUsr.roleKode].shortLabel}).`
+      );
+      showNotice('Akun ASN baru ditambahkan.');
+    }
+    setUserModalOpen(false);
+  }
+
+  function handleToggleUserActive(u: UserAccount) {
+    if (!perms.canManageUsers || u.id === currentUser?.id) return;
+    setUsers((prev) =>
+      prev.map((usr) => (usr.id === u.id ? { ...usr, isActive: !usr.isActive } : usr))
+    );
+    appendAuditLog(
+      'STATUS_PENGGUNA',
+      'PERINGATAN',
+      `Mengubah status akun ${u.namaLengkap} menjadi ${!u.isActive ? 'Aktif' : 'Non-Aktif'}.`
+    );
+  }
+
+  function handleDeleteUser(u: UserAccount) {
+    if (!perms.canManageUsers || u.id === currentUser?.id) return;
+    setUsers((prev) => prev.filter((usr) => usr.id !== u.id));
+    setConfirmDeleteUserId(null);
+    appendAuditLog(
+      'HAPUS_PENGGUNA',
+      'PERINGATAN',
+      `Menghapus akun ASN ${u.namaLengkap} (NIP: ${u.nip}).`
+    );
+    showNotice(`Akun ${u.namaLengkap} dihapus.`);
+  }
+
+  // ============================================================================
+  // EXPORT & WHATSAPP PNG HANDLERS
+  // ============================================================================
+
+  function handleDownloadPNG(
+    customMode?: CardMode,
+    customDate?: string,
+    customSingleItem?: AgendaItem
+  ) {
     const tempCanvas = document.createElement('canvas');
     const modeToUse = customMode || cardMode;
     const dateToUse = customDate || selectedDate;
-    const dayItems = agendas
+    const dayItems = visibleAgendas
       .filter((a) => a.tanggal === dateToUse)
       .sort((a, b) => timeToMinutes(a.jamMulai) - timeToMinutes(b.jamMulai));
 
@@ -1488,9 +2264,10 @@ export default function App() {
       selectedMonth,
       selectedYear,
       dayAgendas: dayItems,
-      singleAgenda: customSingleItem || agendas.find((a) => a.id === cardSingleId) || agendas[0] || null,
+      singleAgenda:
+        customSingleItem || visibleAgendas.find((a) => a.id === cardSingleId) || visibleAgendas[0] || null,
       monthAgendas,
-      allAgendas: agendas,
+      allAgendas: visibleAgendas,
       showPakaian: showPakaianOnCard,
       showNomorSurat: showSuratOnCard,
       showConflictAlert: showConflictOnCard,
@@ -1498,10 +2275,13 @@ export default function App() {
 
     const filename =
       modeToUse === 'harian'
-        ? `agenda-harian-${dateToUse}.png`
-        : modeToUse === 'tunggal' && (customSingleItem || agendas.find((a) => a.id === cardSingleId))
-        ? `kartu-agenda-${(customSingleItem || agendas.find((a) => a.id === cardSingleId))?.tanggal}.png`
-        : `rekap-bulanan-${selectedYear}-${String(selectedMonth + 1).padStart(2, '0')}.png`;
+        ? `siaga-bpbd-harian-${dateToUse}.png`
+        : modeToUse === 'tunggal' &&
+          (customSingleItem || visibleAgendas.find((a) => a.id === cardSingleId))
+        ? `siaga-bpbd-agenda-${
+            (customSingleItem || visibleAgendas.find((a) => a.id === cardSingleId))?.tanggal
+          }.png`
+        : `siaga-bpbd-bulanan-${selectedYear}-${String(selectedMonth + 1).padStart(2, '0')}.png`;
 
     tempCanvas.toBlob((blob) => {
       if (!blob) return;
@@ -1513,16 +2293,19 @@ export default function App() {
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
+      appendAuditLog('UNDUH_PNG_WA', 'SUKSES', `Mengunduh poster WhatsApp (${filename}).`);
       showNotice(`Gambar ${filename} berhasil diunduh.`);
     }, 'image/png');
   }
 
   function handleCopyWhatsAppText(modeOverride?: CardMode) {
     const m = modeOverride || cardMode;
-    let lines: string[] = [];
+    const lines: string[] = [];
 
     if (m === 'harian') {
-      const items = allDayAgendasUnfiltered.filter((a) => a.status !== 'Dibatalkan');
+      const items = allDayAgendasUnfiltered.filter(
+        (a) => a.status !== 'Dibatalkan' && a.status !== 'Draft'
+      );
       lines.push(`*${orgTitle}*`);
       lines.push(`Jadwal Hari: *${formatTanggalLengkap(selectedDate)}*`);
       lines.push('');
@@ -1530,32 +2313,36 @@ export default function App() {
         lines.push('_Tidak ada agenda terjadwal._');
       } else {
         items.forEach((item, idx) => {
-          const conflicts = getConflictsForCandidate(agendas, item);
+          const conflicts = getConflictsForCandidate(visibleAgendas, item);
           lines.push(`${idx + 1}. *${item.jamMulai} - ${item.jamSelesai} WIB* | ${item.judul}`);
           lines.push(`   Tempat: ${item.lokasi}`);
+          if (item.pejabatPendamping) lines.push(`   Disposisi: ${item.statusDisposisi} (${item.pejabatPendamping})`);
           if (item.pakaian) lines.push(`   Pakaian: ${item.pakaian}`);
           if (item.nomorSurat) lines.push(`   No. Surat: ${item.nomorSurat}`);
           if (conflicts.length > 0) {
-            lines.push(`   [Peringatan Bentrok ${conflicts[0].overlapMinutes} mnt dengan "${conflicts[0].agenda.judul}"]`);
+            lines.push(
+              `   [Peringatan Bentrok ${conflicts[0].overlapMinutes} mnt dengan "${conflicts[0].agenda.judul}"]`
+            );
           }
           lines.push('');
         });
       }
     } else if (m === 'tunggal') {
-      const item = agendas.find((a) => a.id === cardSingleId) || agendas[0];
+      const item = visibleAgendas.find((a) => a.id === cardSingleId) || visibleAgendas[0];
       if (item) {
-        lines.push(`*INFORMASI AGENDA KEGIATAN*`);
+        lines.push(`*INFORMASI AGENDA BPBD SIDOARJO*`);
         lines.push(`Acara: *${item.judul}*`);
         lines.push(`Hari/Tgl: ${formatTanggalLengkap(item.tanggal)}`);
         lines.push(`Waktu: ${item.jamMulai} - ${item.jamSelesai} WIB`);
         lines.push(`Tempat: ${item.lokasi}`);
         lines.push(`Penyelenggara: ${item.penyelenggara}`);
+        lines.push(`Disposisi: ${item.statusDisposisi} (${item.pejabatPendamping || '-'})`);
         if (item.pakaian) lines.push(`Pakaian: ${item.pakaian}`);
         if (item.nomorSurat) lines.push(`No. Surat: ${item.nomorSurat}`);
         if (item.catatan) lines.push(`Catatan: ${item.catatan}`);
       }
     } else {
-      const items = monthAgendas.filter((a) => a.status !== 'Dibatalkan');
+      const items = monthAgendas.filter((a) => a.status !== 'Dibatalkan' && a.status !== 'Draft');
       lines.push(`*REKAP AGENDA ${BULAN_ID[selectedMonth].toUpperCase()} ${selectedYear}*`);
       lines.push(`${orgTitle}`);
       lines.push(`Total: ${items.length} Kegiatan`);
@@ -1581,10 +2368,12 @@ export default function App() {
       'Kategori',
       'Lokasi',
       'Penyelenggara',
+      'Status Disposisi',
+      'Pejabat Pendamping',
       'Pakaian',
       'Nomor Surat',
       'Status',
-      'Sumber',
+      'Sifat Rahasia',
     ];
     const rows = monthAgendas.map((a) =>
       [
@@ -1595,10 +2384,12 @@ export default function App() {
         a.kategori,
         a.lokasi,
         a.penyelenggara,
+        a.statusDisposisi,
+        a.pejabatPendamping,
         a.pakaian,
         a.nomorSurat,
         a.status,
-        a.sumber,
+        a.isConfidential ? 'Ya' : 'Tidak',
       ]
         .map((v) => `"${String(v || '').replace(/"/g, '""')}"`)
         .join(',')
@@ -1608,12 +2399,33 @@ export default function App() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `rekap-agenda-${selectedYear}-${String(selectedMonth + 1).padStart(2, '0')}.csv`;
+    a.download = `rekap-siaga-bpbd-${selectedYear}-${String(selectedMonth + 1).padStart(2, '0')}.csv`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
     showNotice('File CSV rekap bulanan berhasil diunduh.');
+  }
+
+  function handleExportAuditCSV() {
+    if (!perms.canExportAuditLog) return;
+    const headers = ['Waktu', 'NIP', 'Nama', 'Role', 'Event', 'Status', 'Detail'];
+    const rows = auditLogs.map((l) =>
+      [l.timestamp, l.nip, l.nama, l.roleKode, l.eventType, l.status, l.detail]
+        .map((v) => `"${String(v || '').replace(/"/g, '""')}"`)
+        .join(',')
+    );
+    const csv = [headers.join(','), ...rows].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `audit-log-siaga-bpbd-${getLocalISODate()}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showNotice('Audit Log CSV berhasil diunduh.');
   }
 
   function handleResetSampleData() {
@@ -1623,15 +2435,15 @@ export default function App() {
     setSelectedMonth(new Date().getMonth());
     setSelectedYear(new Date().getFullYear());
     setConfirmResetOpen(false);
+    appendAuditLog('RESET_DATA_CONTOH', 'PERINGATAN', 'Mengembalikan data agenda contoh awal.');
     showNotice('Data contoh berhasil dimuat ulang.');
   }
 
-  // Calendar Grid Builder (Monday first)
+  // Calendar Grid Builder
   const calendarDays = useMemo(() => {
     const firstDay = new Date(selectedYear, selectedMonth, 1);
     const lastDay = new Date(selectedYear, selectedMonth + 1, 0);
     const totalDays = lastDay.getDate();
-    // JS getDay: 0=Sun..6=Sat -> convert to 0=Mon..6=Sun
     const startOffset = (firstDay.getDay() + 6) % 7;
 
     const cells: Array<{
@@ -1646,15 +2458,19 @@ export default function App() {
     }
 
     for (let d = 1; d <= totalDays; d++) {
-      const dateISO = `${selectedYear}-${String(selectedMonth + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-      const items = agendas
+      const dateISO = `${selectedYear}-${String(selectedMonth + 1).padStart(2, '0')}-${String(
+        d
+      ).padStart(2, '0')}`;
+      const items = visibleAgendas
         .filter((a) => a.tanggal === dateISO && a.status !== 'Dibatalkan')
         .sort((a, b) => timeToMinutes(a.jamMulai) - timeToMinutes(b.jamMulai));
-      const hasConflict = items.some((it) => getConflictsForCandidate(agendas, it).length > 0);
+      const hasConflict = items.some(
+        (it) => getConflictsForCandidate(visibleAgendas, it).length > 0
+      );
       cells.push({ dateISO, dayNum: d, items, hasConflict });
     }
     return cells;
-  }, [selectedYear, selectedMonth, agendas]);
+  }, [selectedYear, selectedMonth, visibleAgendas]);
 
   function changeMonth(delta: number) {
     let m = selectedMonth + delta;
@@ -1673,41 +2489,316 @@ export default function App() {
   const ebuddyTemplates = useMemo(() => getEBuddyTemplates(todayISO), [todayISO]);
 
   // ============================================================================
-  // NAVIGATION ITEMS
+  // LOGIN VIEW (EXACT VISUAL MATCH TO SCREENSHOT + RBAC SPECIFICATION)
   // ============================================================================
 
-  const navItems: Array<{
+  if (!currentUser) {
+    const isLocked = lockoutUntil > nowTick;
+    const remainingSec = isLocked ? Math.ceil((lockoutUntil - nowTick) / 1000) : 0;
+
+    return (
+      <div className="min-h-screen bg-slate-100 flex flex-col items-center justify-center p-4 sm:p-6">
+        <div className="w-full max-w-2xl bg-white rounded-2xl shadow-lg border border-slate-200 overflow-hidden">
+          {/* Top Navy Header Block — Logo Kiri (Sidoarjo) & Logo Kanan (BPBD) */}
+          <div className="bg-[#0F2A4A] px-6 sm:px-8 py-7 text-white space-y-5">
+            <div className="flex items-center justify-between gap-3 sm:gap-4">
+              <div className="flex items-center gap-3 sm:gap-4 min-w-0">
+                <img
+                  src="/assets/aistudio/Coat_of_Arms_of_Sidoarjo_Regency__2__55bcc6f5.png"
+                  alt="Logo Kabupaten Sidoarjo"
+                  referrerPolicy="no-referrer"
+                  className="w-12 h-12 sm:w-14 sm:h-14 object-contain shrink-0"
+                />
+                <div className="leading-tight min-w-0">
+                  <p className="text-[11px] font-semibold tracking-wider text-sky-300 uppercase truncate">
+                    Pemerintah Kabupaten Sidoarjo
+                  </p>
+                  <p className="text-sm sm:text-base font-bold tracking-wide text-white truncate">
+                    BPBD KABUPATEN SIDOARJO
+                  </p>
+                </div>
+              </div>
+              <img
+                src="/assets/aistudio/images__14__e7f780c6.jpeg"
+                alt="Logo BPBD Kabupaten Sidoarjo"
+                referrerPolicy="no-referrer"
+                className="w-12 h-12 sm:w-14 sm:h-14 rounded-full bg-white p-0.5 object-contain shrink-0"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-white text-balance">
+                SIAGA BPBD SIDOARJO
+              </h1>
+              <p className="text-sm text-slate-200">
+                Sistem Informasi Agenda Kegiatan &amp; Disposisi Real-Time
+              </p>
+              <p className="text-xs font-semibold text-amber-400 pt-0.5">
+                Siap · Cepat · Tepat · Humanis
+              </p>
+            </div>
+
+            <p className="text-xs sm:text-[13px] leading-relaxed text-slate-200/95">
+              SIAGA BPBD Sidoarjo adalah aplikasi web yang dirancang untuk mendigitalisasi alur
+              pengelolaan agenda kegiatan kedinasan di lingkungan Badan Penanggulangan Bencana
+              Daerah (BPBD) Kabupaten Sidoarjo. Sistem ini memproses surat masuk
+              undangan/disposisi dari aplikasi e-Buddy, mendeteksi bentrok jadwal otomatis, serta
+              menyiapkan kartu agenda WhatsApp grup pegawai.
+            </p>
+
+            <div className="pt-3 border-t border-white/15">
+              <p className="text-xs text-slate-300">
+                Jl. Raya Kemiri No. 1, Kec. Sidoarjo, Kabupaten Sidoarjo
+              </p>
+            </div>
+          </div>
+
+          {/* Bottom White Portal Form Block */}
+          <div className="px-6 sm:px-8 py-7 space-y-5">
+            <div>
+              <h2 className="text-lg sm:text-xl font-bold text-slate-900">
+                Portal Masuk SIAGA BPBD
+              </h2>
+              <p className="text-xs sm:text-sm text-slate-500 mt-1">
+                Masuk menggunakan NIP (18 digit), Email Dinas (@sidoarjokab.go.id), atau Username
+                kedinasan Anda.
+              </p>
+            </div>
+
+            {loginError && (
+              <div
+                role="alert"
+                className="p-3.5 bg-red-50 border border-red-200 rounded-lg flex items-start gap-2.5 text-xs text-red-800"
+              >
+                <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+                <span>{loginError}</span>
+              </div>
+            )}
+
+            {isLocked && (
+              <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-lg flex items-center gap-2.5 text-xs font-medium text-amber-900">
+                <Lock className="w-4 h-4 text-amber-700 shrink-0" />
+                <span className="font-mono tabular-nums">
+                  Sistem terkunci sementara ({Math.floor(remainingSec / 60)}m {remainingSec % 60}d
+                  tersisa). Atau gunakan tombol Masuk Demo Cepat di bawah.
+                </span>
+              </div>
+            )}
+
+            <form onSubmit={handleLoginSubmit} className="space-y-4">
+              <div>
+                <label
+                  htmlFor="login-identity"
+                  className="block text-xs font-semibold text-slate-700 mb-1.5"
+                >
+                  NIP / Username Kedinasan <span className="text-red-600">*</span>
+                </label>
+                <input
+                  id="login-identity"
+                  type="text"
+                  value={loginIdentity}
+                  onChange={(e) => setLoginIdentity(e.target.value)}
+                  placeholder="Masukkan 18 digit NIP atau email/username pegawai..."
+                  className="w-full px-3.5 py-2.5 text-sm border border-slate-200 rounded-lg bg-white text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#0F2A4A]"
+                />
+              </div>
+
+              <div>
+                <label
+                  htmlFor="login-password"
+                  className="block text-xs font-semibold text-slate-700 mb-1.5"
+                >
+                  Kata Sandi <span className="text-red-600">*</span>
+                </label>
+                <div className="relative">
+                  <input
+                    id="login-password"
+                    type={showPassword ? 'text' : 'password'}
+                    value={loginPassword}
+                    onChange={(e) => setLoginPassword(e.target.value)}
+                    placeholder="Masukkan kata sandi (minimal 8 karakter)..."
+                    className="w-full pl-3.5 pr-11 py-2.5 text-sm border border-slate-200 rounded-lg bg-white text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#0F2A4A]"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((v) => !v)}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1.5 text-slate-400 hover:text-slate-700 rounded"
+                    aria-label={showPassword ? 'Sembunyikan kata sandi' : 'Tampilkan kata sandi'}
+                  >
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                <label className="inline-flex items-center gap-2 text-slate-700 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={rememberSession}
+                    onChange={(e) => setRememberSession(e.target.checked)}
+                    className="w-4 h-4 accent-blue-700 rounded"
+                  />
+                  <span>Pertahankan sesi masuk selama jam kerja (07.30 – 16.00 WIB)</span>
+                </label>
+
+                <button
+                  type="button"
+                  onClick={() => setShowForgotHelp((v) => !v)}
+                  className="inline-flex items-center gap-1 text-blue-700 hover:underline font-medium text-left whitespace-nowrap shrink-0"
+                >
+                  <HelpCircle className="w-3.5 h-3.5 shrink-0" />
+                  <span>Lupa Kata Sandi / Hubungi Admin Sekretariat</span>
+                </button>
+              </div>
+
+              {showForgotHelp && (
+                <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-700 space-y-1.5">
+                  <p className="font-semibold text-slate-900">
+                    Bantuan Reset Kata Sandi &amp; Kredensial Uji Coba
+                  </p>
+                  <p>
+                    Hubungi Admin Sistem / Pranata Komputer Sekretariat BPBD Kabupaten Sidoarjo
+                    untuk reset sandi akun ASN. Untuk pengujian, semua akun demo menggunakan kata
+                    sandi standar: <code className="font-mono font-semibold text-slate-900">Bpbd2026!</code>
+                  </p>
+                </div>
+              )}
+
+              <button
+                type="submit"
+                className="w-full py-3 px-4 bg-[#E65100] hover:bg-[#CC4700] text-white font-semibold text-sm rounded-lg transition-colors tracking-wide focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#E65100]"
+              >
+                MASUK KE DASHBOARD SIAGA BPBD
+              </button>
+            </form>
+
+            {/* Demo Panel Toggle (Hidden by default; clicking a role fills username & password) */}
+            <div className="pt-4 border-t border-slate-200 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowDemoPanel((v) => !v)}
+                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 hover:text-slate-900 transition-colors"
+                >
+                  <span>{showDemoPanel ? 'Sembunyikan Akun Demo' : 'Tampilkan Akun Demo Uji Coba'}</span>
+                </button>
+                {showDemoPanel && (
+                  <span className="text-[11px] text-slate-400">
+                    Klik untuk isi user &amp; sandi
+                  </span>
+                )}
+              </div>
+
+              {showDemoPanel && (
+                <div className="space-y-2.5">
+                  {demoFilledNotice && (
+                    <div className="p-2.5 bg-emerald-50 border border-emerald-200 rounded-lg text-xs text-emerald-800 flex items-center gap-2">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                      <span>{demoFilledNotice}</span>
+                    </div>
+                  )}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    {(
+                      [
+                        'ROLE_SUPER_ADMIN',
+                        'ROLE_OPERATOR',
+                        'ROLE_DISPOSISI',
+                        'ROLE_PIMPINAN',
+                      ] as RoleCode[]
+                    ).map((role) => {
+                      const usr = users.find((u) => u.roleKode === role);
+                      const isFilled = usr && loginIdentity === usr.username;
+                      return (
+                        <button
+                          key={role}
+                          type="button"
+                          onClick={() => handleFillDemoCredentials(role)}
+                          className={`p-2.5 text-left border rounded-lg transition-colors ${
+                            isFilled
+                              ? 'border-[#0F2A4A] bg-slate-100'
+                              : 'border-slate-200 hover:border-slate-400 hover:bg-slate-50'
+                          }`}
+                        >
+                          <p className="text-xs font-semibold text-slate-900 truncate">
+                            {ROLE_META[role].shortLabel}
+                          </p>
+                          <p className="text-[11px] text-slate-500 truncate mt-0.5 font-mono">
+                            {usr?.username || role}
+                          </p>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <p className="text-[11px] text-slate-400 leading-relaxed pt-1">
+              Akses terbatas untuk ASN &amp; Pegawai BPBD Kabupaten Sidoarjo. Seluruh aktivitas login
+              dan perubahan jadwal tercatat dalam Audit Log (maksimal 5 percobaan gagal).
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ============================================================================
+  // AUTHENTICATED RBAC NAVIGATION ITEMS
+  // ============================================================================
+
+  const allNavItems: Array<{
     id: ActiveView;
     label: string;
     icon: React.ComponentType<{ className?: string }>;
     countText?: string;
+    visible: boolean;
   }> = [
     {
       id: 'harian',
       label: 'Jadwal Harian',
       icon: Calendar,
       countText: String(dayStats.total),
+      visible: true,
     },
     {
       id: 'bulanan',
       label: 'Rekap Bulanan',
       icon: CalendarDays,
       countText: String(monthStats.total),
+      visible: true,
     },
     {
       id: 'ebuddy',
       label: 'Ekstrak e-Buddy',
       icon: Sparkles,
+      visible: perms.canUseEBuddy,
     },
     {
       id: 'kartu',
       label: 'Kartu WhatsApp',
       icon: ImageIcon,
+      visible: perms.canOpenCardStudio,
+    },
+    {
+      id: 'pengguna',
+      label: 'Manajemen Akun',
+      icon: Users,
+      countText: String(users.length),
+      visible: perms.canManageUsers,
+    },
+    {
+      id: 'audit',
+      label: 'Riwayat Audit Log',
+      icon: ClipboardList,
+      countText: String(auditLogs.length),
+      visible: perms.canViewAuditLog,
     },
   ];
+  const navItems = allNavItems.filter((n) => n.visible);
 
   // ============================================================================
-  // RENDER
+  // MAIN WORKSPACE SHELL
   // ============================================================================
 
   return (
@@ -1731,7 +2822,7 @@ export default function App() {
         />
       )}
 
-      {/* Left Sidebar (Desktop fixed, Mobile drawer) */}
+      {/* Left Sidebar */}
       <aside
         className={`fixed inset-y-0 left-0 z-50 w-64 bg-white border-r border-slate-200 flex flex-col justify-between transition-transform duration-150 lg:static lg:translate-x-0 ${
           mobileNavOpen ? 'translate-x-0' : '-translate-x-full'
@@ -1739,10 +2830,24 @@ export default function App() {
       >
         <div>
           {/* Brand Zone (Single clean line) */}
-          <div className="h-16 px-6 flex items-center justify-between border-b border-slate-200">
-            <span className="text-lg font-bold tracking-tight text-slate-900 whitespace-nowrap shrink-0">
-              Agenda e-Buddy
-            </span>
+          <div className="h-16 px-5 flex items-center justify-between border-b border-slate-200">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <img
+                src="/assets/aistudio/Coat_of_Arms_of_Sidoarjo_Regency__2__55bcc6f5.png"
+                alt="Logo Sidoarjo"
+                referrerPolicy="no-referrer"
+                className="w-7 h-7 object-contain shrink-0"
+              />
+              <span className="text-sm font-bold tracking-tight text-slate-900 whitespace-nowrap truncate">
+                SIAGA BPBD
+              </span>
+              <img
+                src="/assets/aistudio/images__14__e7f780c6.jpeg"
+                alt="Logo BPBD"
+                referrerPolicy="no-referrer"
+                className="w-7 h-7 rounded-full object-contain shrink-0"
+              />
+            </div>
             <button
               type="button"
               onClick={() => setMobileNavOpen(false)}
@@ -1753,7 +2858,7 @@ export default function App() {
             </button>
           </div>
 
-          {/* Primary Navigation */}
+          {/* Primary Navigation (Filtered by RBAC) */}
           <nav className="p-4 space-y-1" aria-label="Menu Utama">
             {navItems.map((nav) => {
               const Icon = nav.icon;
@@ -1768,7 +2873,7 @@ export default function App() {
                   }}
                   className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-lg text-sm font-medium transition-colors whitespace-nowrap shrink-0 ${
                     isActive
-                      ? 'bg-slate-900 text-white'
+                      ? 'bg-[#0F2A4A] text-white'
                       : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
                   }`}
                 >
@@ -1793,12 +2898,12 @@ export default function App() {
           {/* Quick Summary Block (Hairline separated, zero pills) */}
           <div className="mx-4 mt-2 pt-4 border-t border-slate-200 space-y-3">
             <div className="px-2">
-              <p className="text-xs font-medium text-slate-500">Ringkasan Jadwal</p>
+              <p className="text-xs font-medium text-slate-500">Ringkasan Akses Anda</p>
               <div className="mt-2.5 space-y-2 text-sm">
                 <div className="flex items-center justify-between">
-                  <span className="text-slate-600">Total Tersimpan</span>
+                  <span className="text-slate-600">Agenda Terlihat</span>
                   <span className="font-mono tabular-nums font-semibold text-slate-900">
-                    {agendas.length}
+                    {visibleAgendas.length}
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
@@ -1812,48 +2917,63 @@ export default function App() {
                   </span>
                 </div>
               </div>
+              <p className="text-[11px] text-slate-400 mt-3 leading-relaxed">
+                {ROLE_META[currentUser.roleKode].description}
+              </p>
             </div>
           </div>
         </div>
 
         {/* Sidebar Footer Actions */}
         <div className="p-4 border-t border-slate-200 space-y-2">
-          {!confirmResetOpen ? (
-            <button
-              type="button"
-              onClick={() => setConfirmResetOpen(true)}
-              className="w-full flex items-center gap-2.5 px-3 py-2 text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors whitespace-nowrap"
-            >
-              <RotateCcw className="w-3.5 h-3.5 shrink-0" />
-              <span>Muat Ulang Data Contoh</span>
-            </button>
-          ) : (
-            <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-lg space-y-2">
-              <p className="text-xs text-slate-700">Kembalikan jadwal contoh awal?</p>
-              <div className="flex items-center gap-2">
+          {perms.canCreateAgenda && (
+            <>
+              {!confirmResetOpen ? (
                 <button
                   type="button"
-                  onClick={handleResetSampleData}
-                  className="px-2.5 py-1.5 text-xs font-medium bg-slate-900 text-white rounded hover:bg-slate-800 whitespace-nowrap"
+                  onClick={() => setConfirmResetOpen(true)}
+                  className="w-full flex items-center gap-2.5 px-3 py-2 text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors whitespace-nowrap"
                 >
-                  Ya, Reset
+                  <RotateCcw className="w-3.5 h-3.5 shrink-0" />
+                  <span>Muat Ulang Data Contoh</span>
                 </button>
-                <button
-                  type="button"
-                  onClick={() => setConfirmResetOpen(false)}
-                  className="px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 whitespace-nowrap"
-                >
-                  Batal
-                </button>
-              </div>
-            </div>
+              ) : (
+                <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-lg space-y-2">
+                  <p className="text-xs text-slate-700">Kembalikan jadwal contoh awal?</p>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleResetSampleData}
+                      className="px-2.5 py-1.5 text-xs font-medium bg-slate-900 text-white rounded hover:bg-slate-800 whitespace-nowrap"
+                    >
+                      Ya, Reset
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmResetOpen(false)}
+                      className="px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 whitespace-nowrap"
+                    >
+                      Batal
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
           )}
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="w-full flex items-center gap-2.5 px-3 py-2 text-xs font-medium text-red-700 hover:bg-red-50 rounded-lg transition-colors whitespace-nowrap"
+          >
+            <LogOut className="w-3.5 h-3.5 shrink-0" />
+            <span>Keluar dari Sesi</span>
+          </button>
         </div>
       </aside>
 
       {/* Main Content Shell */}
       <div className="flex-1 min-w-0 flex flex-col">
-        {/* Top Bar Contract: Breadcrumb/Title — 1 Primary Action */}
+        {/* Top Bar with Active Role Info + Logout + Role-Gated Primary Action */}
         <header className="h-16 bg-white border-b border-slate-200 px-4 sm:px-8 flex items-center justify-between gap-4 sticky top-0 z-30">
           <div className="flex items-center gap-3 min-w-0">
             <button
@@ -1865,31 +2985,71 @@ export default function App() {
               <Menu className="w-5 h-5" />
             </button>
             <div className="flex items-center gap-2 text-sm min-w-0">
-              <span className="text-slate-400 hidden sm:inline whitespace-nowrap">Ruang Kerja</span>
-              <span className="text-slate-300 hidden sm:inline">/</span>
+              <span className="text-slate-400 hidden md:inline whitespace-nowrap">
+                SIAGA BPBD Sidoarjo
+              </span>
+              <span className="text-slate-300 hidden md:inline">/</span>
               <h1 className="font-semibold text-slate-900 truncate">
                 {activeView === 'harian' && 'Jadwal & Rekap Harian'}
                 {activeView === 'bulanan' && 'Kalender & Rekap Bulanan'}
                 {activeView === 'ebuddy' && 'Ekstraksi Teks Surat e-Buddy'}
                 {activeView === 'kartu' && 'Studio Kartu Agenda WhatsApp (.PNG)'}
+                {activeView === 'pengguna' && 'Manajemen Pengguna & Hak Akses'}
+                {activeView === 'audit' && 'Riwayat Audit Log Sistem'}
               </h1>
             </div>
           </div>
 
-          <div className="flex items-center gap-3 shrink-0">
+          <div className="flex items-center gap-4 shrink-0">
+            {/* Clean unboxed active role & user metadata (Zero-pill discipline) */}
+            <div className="hidden sm:flex items-center gap-2 text-xs text-slate-600">
+              <ShieldCheck className="w-4 h-4 text-[#0F2A4A] shrink-0" />
+              <span className="font-semibold text-slate-900 whitespace-nowrap">
+                {currentUser.namaLengkap}
+              </span>
+              <span aria-hidden="true">·</span>
+              <span className="whitespace-nowrap">{ROLE_META[currentUser.roleKode].shortLabel}</span>
+            </div>
+
+            {perms.canCreateAgenda && (
+              <button
+                type="button"
+                onClick={() => openAddModal(selectedDate)}
+                className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-[#E65100] hover:bg-[#CC4700] rounded-lg transition-colors whitespace-nowrap shrink-0"
+              >
+                <Plus className="w-4 h-4 shrink-0" />
+                <span>Tambah Agenda</span>
+              </button>
+            )}
+
             <button
               type="button"
-              onClick={() => openAddModal(selectedDate)}
-              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-700 hover:bg-blue-800 rounded-lg transition-colors whitespace-nowrap shrink-0 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700"
+              onClick={handleLogout}
+              title="Keluar (Logout)"
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg transition-colors whitespace-nowrap shrink-0"
             >
-              <Plus className="w-4 h-4 shrink-0" />
-              <span>Tambah Agenda</span>
+              <LogOut className="w-3.5 h-3.5 shrink-0" />
+              <span className="hidden md:inline">Keluar</span>
             </button>
           </div>
         </header>
 
         {/* Main Viewport */}
         <main className="flex-1 p-4 sm:p-8 max-w-6xl w-full mx-auto space-y-6">
+          {/* View-Only Banner for ROLE_PIMPINAN */}
+          {currentUser.roleKode === 'ROLE_PIMPINAN' && (
+            <div className="bg-slate-100 border border-slate-200 rounded-xl px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-slate-700">
+              <span>
+                <strong className="font-semibold text-slate-900">Mode Eksekutif (View-Only):</strong>{' '}
+                Anda dapat memantau seluruh agenda pimpinan (termasuk agenda terbatas),
+                mengonfirmasi kehadiran, dan mengunduh poster/rekap.
+              </span>
+              <span className="font-mono text-slate-500 whitespace-nowrap">
+                {currentUser.jabatan}
+              </span>
+            </div>
+          )}
+
           {/* ================================================================ */}
           {/* VIEW 1: JADWAL & REKAP HARIAN                                    */}
           {/* ================================================================ */}
@@ -1940,7 +3100,7 @@ export default function App() {
                     value={selectedDate}
                     onChange={(e) => e.target.value && setSelectedDate(e.target.value)}
                     aria-label="Pilih tanggal"
-                    className="px-3 py-2 text-sm font-mono tabular-nums border border-slate-200 rounded-lg bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600"
+                    className="px-3 py-2 text-sm font-mono tabular-nums border border-slate-200 rounded-lg bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#0F2A4A]"
                   />
 
                   <button
@@ -1954,7 +3114,7 @@ export default function App() {
                 </div>
               </div>
 
-              {/* 4-Column Summary Metric Strip (Flat, hairline dividers, tabular numerals) */}
+              {/* 4-Column Summary Metric Strip */}
               <div className="bg-white border border-slate-200 rounded-xl grid grid-cols-2 lg:grid-cols-4 divide-y lg:divide-y-0 lg:divide-x divide-slate-200">
                 <div className="p-4 sm:p-5">
                   <p className="text-xs font-medium text-slate-500">Agenda Aktif</p>
@@ -1965,7 +3125,8 @@ export default function App() {
                 <div className="p-4 sm:p-5">
                   <p className="text-xs font-medium text-slate-500">Total Durasi</p>
                   <p className="mt-1 text-2xl font-bold font-mono tabular-nums text-slate-900">
-                    {dayStats.hours} <span className="text-sm font-sans font-normal text-slate-500">jam</span>
+                    {dayStats.hours}{' '}
+                    <span className="text-sm font-sans font-normal text-slate-500">jam</span>
                   </p>
                 </div>
                 <div className="p-4 sm:p-5">
@@ -1986,7 +3147,7 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Automatic Conflict Warning Alert (When overlap exists on selected day) */}
+              {/* Automatic Conflict Warning Alert */}
               {dayStats.conflictCount > 0 && (
                 <div
                   role="alert"
@@ -1996,12 +3157,13 @@ export default function App() {
                     <AlertTriangle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
                     <div>
                       <p className="text-sm font-semibold text-red-900">
-                        Deteksi Bentrok Jadwal Otomatis ({dayStats.conflictCount} kegiatan bertabrakan)
+                        Deteksi Bentrok Jadwal Otomatis ({dayStats.conflictCount} kegiatan
+                        bertabrakan)
                       </p>
                       <p className="text-sm text-red-700 mt-0.5">
                         Terdapat jam pelaksanaan yang saling tumpang tindih pada tanggal{' '}
-                        {formatTanggalPendek(selectedDate)}. Klik tombol Edit pada agenda bertanda
-                        bentrok untuk memindahkan ke slot waktu kosong.
+                        {formatTanggalPendek(selectedDate)}. Pejabat Disposisi dapat menetapkan
+                        perwakilan atau mengedit jadwal ke slot waktu kosong.
                       </p>
                     </div>
                   </div>
@@ -2016,8 +3178,8 @@ export default function App() {
                     type="text"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Cari judul, lokasi, nomor surat, atau disposisi..."
-                    className="w-full pl-10 pr-4 py-2 text-sm bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
+                    placeholder="Cari judul, lokasi, nomor surat, atau pendamping..."
+                    className="w-full pl-10 pr-4 py-2 text-sm bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#0F2A4A]"
                   />
                 </div>
 
@@ -2049,32 +3211,39 @@ export default function App() {
                         Belum ada agenda pada {formatTanggalPendek(selectedDate)}
                       </p>
                       <p className="text-sm text-slate-500 mt-1">
-                        Tambahkan agenda manual atau tempel teks surat e-Buddy untuk pengisian otomatis.
+                        {perms.canCreateAgenda
+                          ? 'Tambahkan agenda manual atau tempel teks surat e-Buddy untuk pengisian otomatis.'
+                          : 'Belum ada jadwal yang dipublikasikan untuk tanggal ini.'}
                       </p>
                     </div>
-                    <div className="pt-2 flex items-center justify-center gap-3">
-                      <button
-                        type="button"
-                        onClick={() => openAddModal(selectedDate)}
-                        className="px-4 py-2 text-sm font-medium bg-blue-700 text-white rounded-lg hover:bg-blue-800 whitespace-nowrap"
-                      >
-                        Tambah Agenda
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setActiveView('ebuddy')}
-                        className="px-4 py-2 text-sm font-medium bg-white border border-slate-200 text-slate-700 rounded-lg hover:bg-slate-50 whitespace-nowrap"
-                      >
-                        Ekstrak Surat e-Buddy
-                      </button>
-                    </div>
+                    {perms.canCreateAgenda && (
+                      <div className="pt-2 flex items-center justify-center gap-3">
+                        <button
+                          type="button"
+                          onClick={() => openAddModal(selectedDate)}
+                          className="px-4 py-2 text-sm font-medium bg-[#E65100] text-white rounded-lg hover:bg-[#CC4700] whitespace-nowrap"
+                        >
+                          Tambah Agenda
+                        </button>
+                        {perms.canUseEBuddy && (
+                          <button
+                            type="button"
+                            onClick={() => setActiveView('ebuddy')}
+                            className="px-4 py-2 text-sm font-medium bg-white border border-slate-200 text-slate-700 rounded-lg hover:bg-slate-50 whitespace-nowrap"
+                          >
+                            Ekstrak Surat e-Buddy
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
                 ) : (
                   dayAgendas.map((item) => {
-                    const conflicts = getConflictsForCandidate(agendas, item);
+                    const conflicts = getConflictsForCandidate(visibleAgendas, item);
                     const hasConflict = conflicts.length > 0;
                     const isDone = item.status === 'Selesai';
                     const isCancelled = item.status === 'Dibatalkan';
+                    const canDeleteThis = perms.canDeleteAgenda(item);
 
                     return (
                       <div
@@ -2086,7 +3255,6 @@ export default function App() {
                         <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
                           {/* Left: Time + Content */}
                           <div className="flex flex-col sm:flex-row sm:items-start gap-4 sm:gap-6 min-w-0 flex-1">
-                            {/* Time Block */}
                             <div className="sm:w-36 shrink-0">
                               <div
                                 className={`font-mono tabular-nums text-base font-semibold ${
@@ -2104,13 +3272,12 @@ export default function App() {
                               </div>
                             </div>
 
-                            {/* Details Block */}
                             <div className="min-w-0 flex-1 space-y-1.5">
                               {/* Unboxed metadata kicker line (Zero-pill discipline) */}
                               <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500">
                                 <span className="font-medium text-slate-700">{item.kategori}</span>
                                 <span aria-hidden="true">·</span>
-                                <span>Sumber: {item.sumber}</span>
+                                <span>{item.sumber}</span>
                                 {item.nomorSurat && (
                                   <>
                                     <span aria-hidden="true">·</span>
@@ -2124,14 +3291,23 @@ export default function App() {
                                       ? 'text-emerald-700'
                                       : isCancelled
                                       ? 'text-slate-400'
+                                      : item.status === 'Draft'
+                                      ? 'text-amber-700'
                                       : 'text-blue-700'
                                   }`}
                                 >
                                   {item.status}
                                 </span>
+                                {item.isConfidential && (
+                                  <>
+                                    <span aria-hidden="true">·</span>
+                                    <span className="font-semibold text-amber-700">
+                                      Sifat Terbatas
+                                    </span>
+                                  </>
+                                )}
                               </div>
 
-                              {/* Title */}
                               <h3
                                 className={`text-base font-semibold text-slate-900 ${
                                   isDone || isCancelled ? 'line-through text-slate-500' : ''
@@ -2140,7 +3316,6 @@ export default function App() {
                                 {item.judul}
                               </h3>
 
-                              {/* Location, Organizer, Dresscode */}
                               <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-slate-600">
                                 <span className="inline-flex items-center gap-1.5">
                                   <MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0" />
@@ -2158,11 +3333,23 @@ export default function App() {
                                 )}
                               </div>
 
+                              {/* Disposisi line */}
+                              <div className="text-xs text-slate-600 pt-0.5">
+                                <span className="font-medium text-slate-800">
+                                  Disposisi: {item.statusDisposisi}
+                                </span>
+                                {item.pejabatPendamping && (
+                                  <span className="text-slate-500">
+                                    {' '}
+                                    · Pendamping: {item.pejabatPendamping}
+                                  </span>
+                                )}
+                              </div>
+
                               {item.catatan && (
-                                <p className="text-xs text-slate-500 pt-0.5">{item.catatan}</p>
+                                <p className="text-xs text-slate-500">{item.catatan}</p>
                               )}
 
-                              {/* Conflict Warning Detail */}
                               {hasConflict && (
                                 <div className="pt-1.5 flex items-start gap-2 text-xs font-medium text-red-700">
                                   <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
@@ -2178,8 +3365,8 @@ export default function App() {
                             </div>
                           </div>
 
-                          {/* Right: Row Actions */}
-                          <div className="flex items-center gap-1.5 shrink-0 self-end md:self-start">
+                          {/* Right: Role-Gated Row Actions */}
+                          <div className="flex flex-wrap items-center gap-1.5 shrink-0 self-end md:self-start">
                             {confirmDeleteId === item.id ? (
                               <div className="flex items-center gap-1.5 bg-red-50 border border-red-200 px-2.5 py-1 rounded-lg">
                                 <span className="text-xs font-medium text-red-800 whitespace-nowrap">
@@ -2187,7 +3374,7 @@ export default function App() {
                                 </span>
                                 <button
                                   type="button"
-                                  onClick={() => handleDeleteAgenda(item.id)}
+                                  onClick={() => handleDeleteAgenda(item)}
                                   className="px-2 py-1 text-xs font-semibold bg-red-600 text-white rounded hover:bg-red-700 whitespace-nowrap"
                                 >
                                   Ya
@@ -2202,50 +3389,94 @@ export default function App() {
                               </div>
                             ) : (
                               <>
-                                <button
-                                  type="button"
-                                  onClick={() => handleToggleStatus(item)}
-                                  title={isDone ? 'Tandai Terjadwal' : 'Tandai Selesai'}
-                                  className={`p-2 rounded-lg border text-xs font-medium transition-colors ${
-                                    isDone
-                                      ? 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
-                                      : 'border-slate-200 bg-white text-slate-600 hover:text-slate-900 hover:bg-slate-50'
-                                  }`}
-                                  aria-label={isDone ? 'Tandai Terjadwal' : 'Tandai Selesai'}
-                                >
-                                  <Check className="w-4 h-4" />
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setCardMode('tunggal');
-                                    setCardSingleId(item.id);
-                                    setActiveView('kartu');
-                                  }}
-                                  title="Buat Kartu WhatsApp PNG"
-                                  className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:text-blue-700 hover:bg-slate-50 transition-colors"
-                                  aria-label="Buat Kartu WhatsApp"
-                                >
-                                  <ImageIcon className="w-4 h-4" />
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => openEditModal(item)}
-                                  title="Edit Agenda"
-                                  className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-colors"
-                                  aria-label="Edit Agenda"
-                                >
-                                  <Pencil className="w-4 h-4" />
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setConfirmDeleteId(item.id)}
-                                  title="Hapus Agenda"
-                                  className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:text-red-600 hover:bg-red-50 transition-colors"
-                                  aria-label="Hapus Agenda"
-                                >
-                                  <Trash2 className="w-4 h-4" />
-                                </button>
+                                {perms.canConfirmPresence &&
+                                  item.statusDisposisi !== 'Hadir Dikonfirmasi' && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleConfirmPimpinanPresence(item)}
+                                      className="px-2.5 py-1.5 rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 text-xs font-medium whitespace-nowrap"
+                                    >
+                                      Konfirmasi Hadir
+                                    </button>
+                                  )}
+
+                                {perms.canEditDisposition && (
+                                  <button
+                                    type="button"
+                                    onClick={() => openDisposisiModal(item)}
+                                    className="px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 text-xs font-medium whitespace-nowrap"
+                                  >
+                                    Disposisi
+                                  </button>
+                                )}
+
+                                {perms.canEditAgenda && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleToggleStatus(item)}
+                                    title={isDone ? 'Tandai Terjadwal' : 'Tandai Selesai'}
+                                    className={`p-2 rounded-lg border text-xs font-medium transition-colors ${
+                                      isDone
+                                        ? 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                                        : 'border-slate-200 bg-white text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+                                    }`}
+                                    aria-label={isDone ? 'Tandai Terjadwal' : 'Tandai Selesai'}
+                                  >
+                                    <Check className="w-4 h-4" />
+                                  </button>
+                                )}
+
+                                {perms.canOpenCardStudio ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setCardMode('tunggal');
+                                      setCardSingleId(item.id);
+                                      setActiveView('kartu');
+                                    }}
+                                    title="Buat Kartu WhatsApp PNG"
+                                    className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:text-blue-700 hover:bg-slate-50 transition-colors"
+                                    aria-label="Buat Kartu WhatsApp"
+                                  >
+                                    <ImageIcon className="w-4 h-4" />
+                                  </button>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDownloadPNG('tunggal', item.tanggal, item)}
+                                    title="Unduh Kartu PNG"
+                                    className="p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:text-blue-700 hover:bg-slate-50 transition-colors"
+                                    aria-label="Unduh Kartu PNG"
+                                  >
+                                    <Download className="w-4 h-4" />
+                                  </button>
+                                )}
+
+                                {perms.canEditAgenda && (
+                                  <button
+                                    type="button"
+                                    onClick={() => openEditModal(item)}
+                                    title="Edit Agenda"
+                                    className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-700 hover:text-slate-900 hover:bg-slate-50 text-xs font-medium transition-colors whitespace-nowrap"
+                                    aria-label="Edit Agenda"
+                                  >
+                                    <Pencil className="w-3.5 h-3.5 shrink-0" />
+                                    <span>Edit</span>
+                                  </button>
+                                )}
+
+                                {canDeleteThis && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setConfirmDeleteId(item.id)}
+                                    title="Hapus Agenda"
+                                    className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-red-200 bg-white text-red-700 hover:bg-red-50 text-xs font-medium transition-colors whitespace-nowrap"
+                                    aria-label="Hapus Agenda"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5 shrink-0" />
+                                    <span>Hapus</span>
+                                  </button>
+                                )}
                               </>
                             )}
                           </div>
@@ -2260,7 +3491,8 @@ export default function App() {
               {dayAgendas.length > 0 && (
                 <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
                   <p className="text-xs text-slate-500">
-                    Siap dibagikan ke grup WhatsApp pimpinan atau staf dalam format gambar PNG atau teks rapi.
+                    Siap dibagikan ke grup WhatsApp pimpinan atau pegawai BPBD Sidoarjo dalam format
+                    gambar PNG atau teks rapi.
                   </p>
                   <div className="flex items-center gap-2">
                     <button
@@ -2271,17 +3503,19 @@ export default function App() {
                       <Copy className="w-3.5 h-3.5" />
                       <span>Salin Teks WA</span>
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setCardMode('harian');
-                        setActiveView('kartu');
-                      }}
-                      className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg whitespace-nowrap"
-                    >
-                      <SlidersHorizontal className="w-3.5 h-3.5" />
-                      <span>Kustomisasi Kartu PNG</span>
-                    </button>
+                    {perms.canOpenCardStudio && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCardMode('harian');
+                          setActiveView('kartu');
+                        }}
+                        className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg whitespace-nowrap"
+                      >
+                        <SlidersHorizontal className="w-3.5 h-3.5" />
+                        <span>Kustomisasi Kartu PNG</span>
+                      </button>
+                    )}
                   </div>
                 </div>
               )}
@@ -2293,7 +3527,6 @@ export default function App() {
           {/* ================================================================ */}
           {activeView === 'bulanan' && (
             <div className="space-y-6">
-              {/* Month Header & Export Actions */}
               <div className="bg-white border border-slate-200 rounded-xl p-4 sm:p-5 flex flex-col md:flex-row md:items-center justify-between gap-4">
                 <div className="flex items-center gap-3">
                   <div className="flex items-center border border-slate-200 rounded-lg bg-slate-50 p-0.5">
@@ -2353,7 +3586,7 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => handleDownloadPNG('bulanan')}
-                    className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-medium text-white bg-slate-900 hover:bg-slate-800 rounded-lg whitespace-nowrap"
+                    className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-medium text-white bg-[#0F2A4A] hover:bg-slate-800 rounded-lg whitespace-nowrap"
                   >
                     <Download className="w-3.5 h-3.5" />
                     <span>Unduh Rekap PNG</span>
@@ -2361,7 +3594,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Monthly Stats Strip */}
               <div className="bg-white border border-slate-200 rounded-xl grid grid-cols-2 lg:grid-cols-4 divide-y lg:divide-y-0 lg:divide-x divide-slate-200">
                 <div className="p-4 sm:p-5">
                   <p className="text-xs font-medium text-slate-500">Total Kegiatan</p>
@@ -2372,13 +3604,15 @@ export default function App() {
                 <div className="p-4 sm:p-5">
                   <p className="text-xs font-medium text-slate-500">Hari Terisi</p>
                   <p className="mt-1 text-2xl font-bold font-mono tabular-nums text-slate-900">
-                    {monthStats.uniqueDays} <span className="text-sm font-sans font-normal text-slate-500">hari</span>
+                    {monthStats.uniqueDays}{' '}
+                    <span className="text-sm font-sans font-normal text-slate-500">hari</span>
                   </p>
                 </div>
                 <div className="p-4 sm:p-5">
                   <p className="text-xs font-medium text-slate-500">Estimasi Jam Rapat</p>
                   <p className="mt-1 text-2xl font-bold font-mono tabular-nums text-slate-900">
-                    {monthStats.hours} <span className="text-sm font-sans font-normal text-slate-500">jam</span>
+                    {monthStats.hours}{' '}
+                    <span className="text-sm font-sans font-normal text-slate-500">jam</span>
                   </p>
                 </div>
                 <div className="p-4 sm:p-5">
@@ -2427,9 +3661,7 @@ export default function App() {
                         <div className="flex items-center justify-between w-full">
                           <span
                             className={`font-mono tabular-nums text-xs font-semibold w-6 h-6 flex items-center justify-center rounded-md ${
-                              isToday
-                                ? 'bg-blue-700 text-white'
-                                : 'text-slate-700'
+                              isToday ? 'bg-[#0F2A4A] text-white' : 'text-slate-700'
                             }`}
                           >
                             {cell.dayNum}
@@ -2472,7 +3704,7 @@ export default function App() {
                       Tabel Rekap Agenda {BULAN_ID[selectedMonth]} {selectedYear}
                     </h3>
                     <p className="text-xs text-slate-500 mt-0.5">
-                      Klik baris untuk membuka detail harian atau mengedit jadwal.
+                      Menampilkan agenda sesuai hak akses peran Anda.
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
@@ -2496,9 +3728,9 @@ export default function App() {
                       <tr className="border-b border-slate-200 bg-slate-50 text-xs font-semibold text-slate-600">
                         <th className="py-3 px-4 whitespace-nowrap">Tanggal</th>
                         <th className="py-3 px-4 whitespace-nowrap">Waktu</th>
-                        <th className="py-3 px-4">Kegiatan & Penyelenggara</th>
+                        <th className="py-3 px-4">Kegiatan &amp; Disposisi</th>
                         <th className="py-3 px-4">Lokasi</th>
-                        <th className="py-3 px-4 whitespace-nowrap">Status & Bentrok</th>
+                        <th className="py-3 px-4 whitespace-nowrap">Status &amp; Bentrok</th>
                         <th className="py-3 px-4 text-right whitespace-nowrap">Aksi</th>
                       </tr>
                     </thead>
@@ -2511,7 +3743,7 @@ export default function App() {
                         </tr>
                       ) : (
                         filteredMonthAgendas.map((item) => {
-                          const conflicts = getConflictsForCandidate(agendas, item);
+                          const conflicts = getConflictsForCandidate(visibleAgendas, item);
                           return (
                             <tr key={item.id} className="hover:bg-slate-50/70 transition-colors">
                               <td className="py-3 px-4 font-mono tabular-nums text-xs text-slate-700 whitespace-nowrap">
@@ -2525,8 +3757,8 @@ export default function App() {
                                   {item.judul}
                                 </div>
                                 <div className="text-xs text-slate-500 truncate">
-                                  {item.penyelenggara}
-                                  {item.nomorSurat ? ` · ${item.nomorSurat}` : ''}
+                                  {item.statusDisposisi}
+                                  {item.pejabatPendamping ? ` · ${item.pejabatPendamping}` : ''}
                                 </div>
                               </td>
                               <td className="py-3 px-4 text-xs text-slate-600 max-w-[200px] truncate">
@@ -2554,23 +3786,56 @@ export default function App() {
                                 </div>
                               </td>
                               <td className="py-3 px-4 text-right whitespace-nowrap">
-                                <button
-                                  type="button"
-                                  onClick={() => openEditModal(item)}
-                                  className="text-xs font-medium text-blue-700 hover:underline mr-3"
-                                >
-                                  Edit
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setSelectedDate(item.tanggal);
-                                    setActiveView('harian');
-                                  }}
-                                  className="text-xs font-medium text-slate-600 hover:text-slate-900"
-                                >
-                                  Lihat Hari
-                                </button>
+                                {confirmDeleteId === `month-${item.id}` ? (
+                                  <span className="inline-flex items-center gap-1.5 bg-red-50 border border-red-200 px-2 py-1 rounded">
+                                    <span className="text-xs text-red-800">Hapus?</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteAgenda(item)}
+                                      className="text-xs font-semibold text-red-700 hover:underline"
+                                    >
+                                      Ya
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setConfirmDeleteId(null)}
+                                      className="text-xs text-slate-600 hover:text-slate-900"
+                                    >
+                                      Batal
+                                    </button>
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-3">
+                                    {perms.canEditAgenda && (
+                                      <button
+                                        type="button"
+                                        onClick={() => openEditModal(item)}
+                                        className="text-xs font-medium text-blue-700 hover:underline"
+                                      >
+                                        Edit
+                                      </button>
+                                    )}
+                                    {perms.canDeleteAgenda(item) && (
+                                      <button
+                                        type="button"
+                                        onClick={() => setConfirmDeleteId(`month-${item.id}`)}
+                                        className="text-xs font-medium text-red-600 hover:underline"
+                                      >
+                                        Hapus
+                                      </button>
+                                    )}
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setSelectedDate(item.tanggal);
+                                        setActiveView('harian');
+                                      }}
+                                      className="text-xs font-medium text-slate-600 hover:text-slate-900"
+                                    >
+                                      Lihat Hari
+                                    </button>
+                                  </span>
+                                )}
                               </td>
                             </tr>
                           );
@@ -2584,23 +3849,21 @@ export default function App() {
           )}
 
           {/* ================================================================ */}
-          {/* VIEW 3: EKSTRAKSI TEKS SURAT E-BUDDY                             */}
+          {/* VIEW 3: EKSTRAKSI TEKS SURAT E-BUDDY (OPERATOR & SUPER ADMIN)    */}
           {/* ================================================================ */}
-          {activeView === 'ebuddy' && (
+          {activeView === 'ebuddy' && perms.canUseEBuddy && (
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-              {/* Left Column: Raw Input & Templates */}
               <div className="lg:col-span-6 bg-white border border-slate-200 rounded-xl p-5 space-y-4">
                 <div>
                   <h2 className="text-lg font-bold text-slate-900">
                     Tempel Teks Surat / Disposisi e-Buddy
                   </h2>
                   <p className="text-sm text-slate-600 mt-1">
-                    Salin isi surat undangan, nota dinas, atau pesan terusan e-Buddy untuk
-                    mengekstrak tanggal, waktu, tempat, pakaian, dan nomor surat secara otomatis.
+                    Salin isi surat undangan atau nota dinas e-Buddy untuk mengekstrak tanggal,
+                    waktu, tempat, pakaian, dan nomor surat secara otomatis.
                   </p>
                 </div>
 
-                {/* Sample Template Buttons */}
                 <div className="space-y-1.5">
                   <p className="text-xs font-medium text-slate-500">Contoh Cepat Uji Ekstraksi:</p>
                   <div className="flex flex-wrap gap-2">
@@ -2629,8 +3892,8 @@ export default function App() {
                     rows={12}
                     value={ebuddyRawText}
                     onChange={(e) => setEbuddyRawText(e.target.value)}
-                    placeholder={`Contoh format:\nNomor : 005/123/SETDA\nHal : Undangan Rapat Evaluasi\nHari/Tanggal : Kamis, 26 November 2026\nPukul : 09.00 - 11.30 WIB\nTempat : Ruang Rapat Utama\nPakaian : Batik`}
-                    className="w-full p-3.5 text-sm font-mono bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-slate-900"
+                    placeholder={`Contoh format:\nNomor : 360/123/BPBD/2026\nHal : Undangan Rapat Koordinasi\nHari/Tanggal : Kamis, 26 November 2026\nPukul : 09.00 - 11.30 WIB\nTempat : Ruang Rapat Pusdalops BPBD\nPakaian : PDH / Batik`}
+                    className="w-full p-3.5 text-sm font-mono bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#0F2A4A] text-slate-900"
                   />
                 </div>
 
@@ -2649,7 +3912,7 @@ export default function App() {
                     type="button"
                     onClick={() => handleExtractEBuddy()}
                     disabled={!ebuddyRawText.trim()}
-                    className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-blue-700 text-white rounded-lg hover:bg-blue-800 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
+                    className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-[#E65100] text-white rounded-lg hover:bg-[#CC4700] disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
                   >
                     <Sparkles className="w-4 h-4" />
                     <span>Ekstrak Jadwal Sekarang</span>
@@ -2657,7 +3920,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Right Column: Live Extracted Fields & Conflict Verification */}
               <div className="lg:col-span-6 bg-white border border-slate-200 rounded-xl p-5 space-y-4">
                 <div className="flex items-center justify-between border-b border-slate-200 pb-3">
                   <div>
@@ -2688,7 +3950,6 @@ export default function App() {
                   </div>
                 ) : (
                   <div className="space-y-4">
-                    {/* Automatic Conflict Check inside e-Buddy */}
                     {ebuddyConflicts.length > 0 ? (
                       <div className="p-3.5 bg-red-50 border border-red-200 rounded-lg space-y-2">
                         <div className="flex items-start gap-2.5">
@@ -2700,7 +3961,8 @@ export default function App() {
                             <p className="mt-0.5">
                               Bertabrakan {ebuddyConflicts[0].overlapMinutes} menit dengan{' '}
                               <strong>"{ebuddyConflicts[0].agenda.judul}"</strong> (
-                              {ebuddyConflicts[0].agenda.jamMulai}–{ebuddyConflicts[0].agenda.jamSelesai}).
+                              {ebuddyConflicts[0].agenda.jamMulai}–
+                              {ebuddyConflicts[0].agenda.jamSelesai}).
                             </p>
                           </div>
                         </div>
@@ -2710,17 +3972,16 @@ export default function App() {
                           className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-white border border-red-200 text-red-700 hover:bg-red-100 rounded-md"
                         >
                           <Clock className="w-3.5 h-3.5" />
-                          <span>Cari & Terapkan Slot Kosong Terdekat</span>
+                          <span>Cari &amp; Terapkan Slot Kosong Terdekat</span>
                         </button>
                       </div>
                     ) : (
                       <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg flex items-center gap-2 text-xs font-medium text-emerald-800">
                         <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                        <span>Tidak ada bentrok jadwal pada tanggal & jam tersebut.</span>
+                        <span>Tidak ada bentrok jadwal pada tanggal &amp; jam tersebut.</span>
                       </div>
                     )}
 
-                    {/* Editable Extracted Fields */}
                     <div className="space-y-3">
                       <div>
                         <label className="block text-xs font-medium text-slate-600 mb-1">
@@ -2732,7 +3993,7 @@ export default function App() {
                           onChange={(e) =>
                             setEbuddyPreview({ ...ebuddyPreview, judul: e.target.value })
                           }
-                          className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
+                          className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
                         />
                       </div>
 
@@ -2747,7 +4008,7 @@ export default function App() {
                             onChange={(e) =>
                               setEbuddyPreview({ ...ebuddyPreview, tanggal: e.target.value })
                             }
-                            className="w-full px-3 py-2 text-sm font-mono tabular-nums border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
+                            className="w-full px-3 py-2 text-sm font-mono tabular-nums border border-slate-200 rounded-lg"
                           />
                         </div>
                         <div>
@@ -2760,7 +4021,7 @@ export default function App() {
                             onChange={(e) =>
                               setEbuddyPreview({ ...ebuddyPreview, jamMulai: e.target.value })
                             }
-                            className="w-full px-3 py-2 text-sm font-mono tabular-nums border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
+                            className="w-full px-3 py-2 text-sm font-mono tabular-nums border border-slate-200 rounded-lg"
                           />
                         </div>
                         <div>
@@ -2773,7 +4034,7 @@ export default function App() {
                             onChange={(e) =>
                               setEbuddyPreview({ ...ebuddyPreview, jamSelesai: e.target.value })
                             }
-                            className="w-full px-3 py-2 text-sm font-mono tabular-nums border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
+                            className="w-full px-3 py-2 text-sm font-mono tabular-nums border border-slate-200 rounded-lg"
                           />
                         </div>
                       </div>
@@ -2789,7 +4050,7 @@ export default function App() {
                             onChange={(e) =>
                               setEbuddyPreview({ ...ebuddyPreview, lokasi: e.target.value })
                             }
-                            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
+                            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
                           />
                         </div>
                         <div>
@@ -2802,7 +4063,7 @@ export default function App() {
                             onChange={(e) =>
                               setEbuddyPreview({ ...ebuddyPreview, penyelenggara: e.target.value })
                             }
-                            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
+                            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
                           />
                         </div>
                       </div>
@@ -2818,7 +4079,7 @@ export default function App() {
                             onChange={(e) =>
                               setEbuddyPreview({ ...ebuddyPreview, nomorSurat: e.target.value })
                             }
-                            className="w-full px-3 py-2 text-sm font-mono border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
+                            className="w-full px-3 py-2 text-sm font-mono border border-slate-200 rounded-lg"
                           />
                         </div>
                         <div>
@@ -2831,7 +4092,7 @@ export default function App() {
                             onChange={(e) =>
                               setEbuddyPreview({ ...ebuddyPreview, pakaian: e.target.value })
                             }
-                            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
+                            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
                           />
                         </div>
                         <div>
@@ -2846,7 +4107,7 @@ export default function App() {
                                 kategori: e.target.value as AgendaCategory,
                               })
                             }
-                            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-600"
+                            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white"
                           >
                             {CATEGORIES.map((c) => (
                               <option key={c} value={c}>
@@ -2867,7 +4128,7 @@ export default function App() {
                           onChange={(e) =>
                             setEbuddyPreview({ ...ebuddyPreview, catatan: e.target.value })
                           }
-                          className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
+                          className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
                         />
                       </div>
                     </div>
@@ -2876,7 +4137,7 @@ export default function App() {
                       <button
                         type="button"
                         onClick={handleSaveEBuddyToAgenda}
-                        className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-slate-900 text-white rounded-lg hover:bg-slate-800 whitespace-nowrap"
+                        className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-[#0F2A4A] text-white rounded-lg hover:bg-slate-800 whitespace-nowrap"
                       >
                         <span>Simpan ke Jadwal</span>
                         <ArrowRight className="w-4 h-4" />
@@ -2891,24 +4152,21 @@ export default function App() {
           {/* ================================================================ */}
           {/* VIEW 4: STUDIO KARTU WHATSAPP (.PNG)                             */}
           {/* ================================================================ */}
-          {activeView === 'kartu' && (
+          {activeView === 'kartu' && perms.canOpenCardStudio && (
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-              {/* Left Settings Panel */}
               <div className="lg:col-span-5 bg-white border border-slate-200 rounded-xl p-5 space-y-5">
                 <div>
                   <h2 className="text-lg font-bold text-slate-900">
                     Pengaturan Kartu WhatsApp
                   </h2>
                   <p className="text-xs text-slate-500 mt-1">
-                    Gambar beresolusi 1080px tajam dan siap langsung dikirim ke grup atau kontak WhatsApp.
+                    Gambar beresolusi 1080px tajam dan siap langsung dikirim ke grup WhatsApp
+                    pegawai BPBD Sidoarjo.
                   </p>
                 </div>
 
-                {/* Mode Selector */}
                 <div className="space-y-1.5">
-                  <label className="block text-xs font-medium text-slate-600">
-                    Jenis Kartu
-                  </label>
+                  <label className="block text-xs font-medium text-slate-600">Jenis Kartu</label>
                   <div className="grid grid-cols-3 gap-1 p-1 bg-slate-100 rounded-lg">
                     {(
                       [
@@ -2933,7 +4191,6 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Conditional Date / Single Item Picker */}
                 {cardMode === 'harian' && (
                   <div>
                     <label className="block text-xs font-medium text-slate-600 mb-1">
@@ -2958,7 +4215,7 @@ export default function App() {
                       onChange={(e) => setCardSingleId(e.target.value)}
                       className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white"
                     >
-                      {agendas.map((a) => (
+                      {visibleAgendas.map((a) => (
                         <option key={a.id} value={a.id}>
                           {formatTanggalPendek(a.tanggal)} ({a.jamMulai}) — {a.judul}
                         </option>
@@ -2993,21 +4250,22 @@ export default function App() {
                   </div>
                 )}
 
-                {/* Org Header Title */}
                 <div>
                   <label className="block text-xs font-medium text-slate-600 mb-1">
-                    Judul Instansi / Bagian (Header Kartu)
+                    Judul Kop Instansi (Header Kartu)
+                    {currentUser.roleKode !== 'ROLE_SUPER_ADMIN' && (
+                      <span className="text-slate-400 font-normal"> · Dikelola Super Admin</span>
+                    )}
                   </label>
                   <input
                     type="text"
                     value={orgTitle}
                     onChange={(e) => setOrgTitle(e.target.value)}
-                    placeholder="AGENDA KEGIATAN SEKRETARIAT"
-                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                    disabled={currentUser.roleKode !== 'ROLE_SUPER_ADMIN'}
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg disabled:bg-slate-50 disabled:text-slate-500"
                   />
                 </div>
 
-                {/* Theme Selector */}
                 <div className="space-y-1.5">
                   <label className="block text-xs font-medium text-slate-600">
                     Tema Warna Kartu
@@ -3016,7 +4274,7 @@ export default function App() {
                     {(
                       [
                         { id: 'putih', label: 'Putih Bersih' },
-                        { id: 'biru', label: 'Biru Instansi' },
+                        { id: 'biru', label: 'Biru BPBD' },
                         { id: 'gelap', label: 'Gelap Elegan' },
                       ] as const
                     ).map((t) => (
@@ -3026,7 +4284,7 @@ export default function App() {
                         onClick={() => setCardTheme(t.id)}
                         className={`px-3 py-2 text-xs font-medium rounded-lg border transition-colors whitespace-nowrap ${
                           cardTheme === t.id
-                            ? 'border-blue-700 bg-blue-50 text-blue-800'
+                            ? 'border-[#0F2A4A] bg-slate-100 text-slate-900'
                             : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
                         }`}
                       >
@@ -3036,7 +4294,6 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Toggles */}
                 <div className="space-y-2.5 pt-1 border-t border-slate-200">
                   <label className="flex items-center justify-between text-sm text-slate-700 cursor-pointer">
                     <span>Tampilkan info pakaian / dresscode</span>
@@ -3044,7 +4301,7 @@ export default function App() {
                       type="checkbox"
                       checked={showPakaianOnCard}
                       onChange={(e) => setShowPakaianOnCard(e.target.checked)}
-                      className="w-4 h-4 accent-blue-700"
+                      className="w-4 h-4 accent-[#0F2A4A]"
                     />
                   </label>
                   <label className="flex items-center justify-between text-sm text-slate-700 cursor-pointer">
@@ -3053,7 +4310,7 @@ export default function App() {
                       type="checkbox"
                       checked={showSuratOnCard}
                       onChange={(e) => setShowSuratOnCard(e.target.checked)}
-                      className="w-4 h-4 accent-blue-700"
+                      className="w-4 h-4 accent-[#0F2A4A]"
                     />
                   </label>
                   <label className="flex items-center justify-between text-sm text-slate-700 cursor-pointer">
@@ -3062,12 +4319,11 @@ export default function App() {
                       type="checkbox"
                       checked={showConflictOnCard}
                       onChange={(e) => setShowConflictOnCard(e.target.checked)}
-                      className="w-4 h-4 accent-blue-700"
+                      className="w-4 h-4 accent-[#0F2A4A]"
                     />
                   </label>
                 </div>
 
-                {/* Download & Copy Buttons */}
                 <div className="pt-2 space-y-2.5">
                   <button
                     type="button"
@@ -3088,7 +4344,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Right Live Canvas Preview */}
               <div className="lg:col-span-7 bg-white border border-slate-200 rounded-xl p-5 space-y-3">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-medium text-slate-500">
@@ -3102,6 +4357,205 @@ export default function App() {
                     className="max-w-full h-auto rounded-lg shadow-md"
                     style={{ maxHeight: '700px', width: 'auto' }}
                   />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ================================================================ */}
+          {/* VIEW 5: MANAJEMEN AKUN & ROLE (SUPER ADMIN ONLY)                 */}
+          {/* ================================================================ */}
+          {activeView === 'pengguna' && perms.canManageUsers && (
+            <div className="space-y-6">
+              <div className="bg-white border border-slate-200 rounded-xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div>
+                  <h2 className="text-lg font-bold text-slate-900">
+                    Manajemen Akun ASN &amp; Role RBAC
+                  </h2>
+                  <p className="text-sm text-slate-500 mt-0.5">
+                    Kelola akun pegawai BPBD Sidoarjo, tetapkan peran akses, atau nonaktifkan akun.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={openAddUserModal}
+                  className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-[#0F2A4A] text-white hover:bg-slate-800 rounded-lg whitespace-nowrap shrink-0"
+                >
+                  <UserPlus className="w-4 h-4" />
+                  <span>Tambah Akun ASN</span>
+                </button>
+              </div>
+
+              <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="border-b border-slate-200 bg-slate-50 text-xs font-semibold text-slate-600">
+                        <th className="py-3 px-4 whitespace-nowrap">NIP (18 Digit)</th>
+                        <th className="py-3 px-4">Nama &amp; Jabatan</th>
+                        <th className="py-3 px-4 whitespace-nowrap">Username / Email</th>
+                        <th className="py-3 px-4 whitespace-nowrap">Role RBAC</th>
+                        <th className="py-3 px-4 whitespace-nowrap">Status</th>
+                        <th className="py-3 px-4 text-right whitespace-nowrap">Aksi</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200 text-sm">
+                      {users.map((u) => (
+                        <tr key={u.id} className="hover:bg-slate-50/70">
+                          <td className="py-3 px-4 font-mono tabular-nums text-xs text-slate-700 whitespace-nowrap">
+                            {u.nip}
+                          </td>
+                          <td className="py-3 px-4">
+                            <div className="font-semibold text-slate-900">{u.namaLengkap}</div>
+                            <div className="text-xs text-slate-500">
+                              {u.jabatan} · {u.bidang}
+                            </div>
+                          </td>
+                          <td className="py-3 px-4 text-xs text-slate-600">
+                            <div className="font-mono text-slate-800">{u.username}</div>
+                            <div>{u.email}</div>
+                          </td>
+                          <td className="py-3 px-4 text-xs font-medium text-slate-800 whitespace-nowrap">
+                            {ROLE_META[u.roleKode].shortLabel}
+                          </td>
+                          <td className="py-3 px-4 text-xs whitespace-nowrap">
+                            <span
+                              className={
+                                u.isActive
+                                  ? 'text-emerald-700 font-semibold'
+                                  : 'text-red-600 font-semibold'
+                              }
+                            >
+                              {u.isActive ? 'Aktif' : 'Non-Aktif'}
+                            </span>
+                          </td>
+                          <td className="py-3 px-4 text-right whitespace-nowrap">
+                            {confirmDeleteUserId === u.id ? (
+                              <span className="inline-flex items-center gap-1.5 bg-red-50 border border-red-200 px-2.5 py-1 rounded">
+                                <span className="text-xs text-red-800">Hapus akun?</span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteUser(u)}
+                                  className="text-xs font-semibold text-red-700 hover:underline"
+                                >
+                                  Ya
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteUserId(null)}
+                                  className="text-xs text-slate-600 hover:text-slate-900"
+                                >
+                                  Batal
+                                </button>
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-3">
+                                <button
+                                  type="button"
+                                  onClick={() => openEditUserModal(u)}
+                                  className="text-xs font-medium text-blue-700 hover:underline"
+                                >
+                                  Edit
+                                </button>
+                                {u.id !== currentUser.id && (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleToggleUserActive(u)}
+                                      className="text-xs font-medium text-slate-600 hover:text-slate-900"
+                                    >
+                                      {u.isActive ? 'Nonaktifkan' : 'Aktifkan'}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setConfirmDeleteUserId(u.id)}
+                                      className="text-xs font-medium text-red-600 hover:underline"
+                                    >
+                                      Hapus
+                                    </button>
+                                  </>
+                                )}
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ================================================================ */}
+          {/* VIEW 6: AUDIT LOG (SUPER ADMIN & PEJABAT DISPOSISI)              */}
+          {/* ================================================================ */}
+          {activeView === 'audit' && perms.canViewAuditLog && (
+            <div className="space-y-6">
+              <div className="bg-white border border-slate-200 rounded-xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div>
+                  <h2 className="text-lg font-bold text-slate-900">
+                    Riwayat Audit Log Aktivitas Sistem
+                  </h2>
+                  <p className="text-sm text-slate-500 mt-0.5">
+                    Catatan append-only aktivitas otentikasi, disposisi, dan perubahan agenda.
+                  </p>
+                </div>
+                {perms.canExportAuditLog && (
+                  <button
+                    type="button"
+                    onClick={handleExportAuditCSV}
+                    className="inline-flex items-center gap-2 px-4 py-2 text-xs font-medium bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-lg whitespace-nowrap shrink-0"
+                  >
+                    <Download className="w-4 h-4" />
+                    <span>Ekspor Audit CSV</span>
+                  </button>
+                )}
+              </div>
+
+              <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="border-b border-slate-200 bg-slate-50 text-xs font-semibold text-slate-600">
+                        <th className="py-3 px-4 whitespace-nowrap">Waktu</th>
+                        <th className="py-3 px-4 whitespace-nowrap">Pengguna / NIP</th>
+                        <th className="py-3 px-4 whitespace-nowrap">Aktivitas</th>
+                        <th className="py-3 px-4 whitespace-nowrap">Status</th>
+                        <th className="py-3 px-4">Keterangan</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200 text-xs">
+                      {auditLogs.map((log) => (
+                        <tr key={log.id} className="hover:bg-slate-50/70">
+                          <td className="py-3 px-4 font-mono tabular-nums text-slate-600 whitespace-nowrap">
+                            {new Date(log.timestamp).toLocaleString('id-ID')}
+                          </td>
+                          <td className="py-3 px-4 whitespace-nowrap">
+                            <div className="font-medium text-slate-900">{log.nama}</div>
+                            <div className="font-mono text-slate-500">{log.nip}</div>
+                          </td>
+                          <td className="py-3 px-4 font-mono font-semibold text-slate-800 whitespace-nowrap">
+                            {log.eventType}
+                          </td>
+                          <td className="py-3 px-4 whitespace-nowrap">
+                            <span
+                              className={`font-semibold ${
+                                log.status === 'SUKSES'
+                                  ? 'text-emerald-700'
+                                  : log.status === 'GAGAL'
+                                  ? 'text-red-600'
+                                  : 'text-amber-700'
+                              }`}
+                            >
+                              {log.status}
+                            </span>
+                          </td>
+                          <td className="py-3 px-4 text-slate-700">{log.detail}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               </div>
             </div>
@@ -3134,7 +4588,10 @@ export default function App() {
               </button>
             </div>
 
-            <form onSubmit={handleSaveAgenda} className="p-6 space-y-4 max-h-[82vh] overflow-y-auto">
+            <form
+              onSubmit={handleSaveAgenda}
+              className="p-6 space-y-4 max-h-[82vh] overflow-y-auto"
+            >
               {formError && (
                 <div className="p-3 bg-red-50 border border-red-200 rounded-lg flex items-center gap-2 text-xs font-medium text-red-700">
                   <XCircle className="w-4 h-4 shrink-0" />
@@ -3142,7 +4599,6 @@ export default function App() {
                 </div>
               )}
 
-              {/* Live Conflict Detection inside Modal */}
               {formConflicts.length > 0 && (
                 <div className="p-3.5 bg-red-50 border border-red-200 rounded-lg space-y-2">
                   <div className="flex items-start gap-2.5">
@@ -3181,8 +4637,8 @@ export default function App() {
                   required
                   value={formState.judul}
                   onChange={(e) => setFormState({ ...formState, judul: e.target.value })}
-                  placeholder="Contoh: Rapat Koordinasi Penyusunan RKPD"
-                  className="w-full px-3.5 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
+                  placeholder="Contoh: Rapat Koordinasi Kesiapsiagaan"
+                  className="w-full px-3.5 py-2 text-sm border border-slate-200 rounded-lg"
                 />
               </div>
 
@@ -3196,7 +4652,7 @@ export default function App() {
                     required
                     value={formState.tanggal}
                     onChange={(e) => setFormState({ ...formState, tanggal: e.target.value })}
-                    className="w-full px-3.5 py-2 text-sm font-mono tabular-nums border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
+                    className="w-full px-3.5 py-2 text-sm font-mono tabular-nums border border-slate-200 rounded-lg"
                   />
                 </div>
                 <div>
@@ -3208,7 +4664,7 @@ export default function App() {
                     required
                     value={formState.jamMulai}
                     onChange={(e) => setFormState({ ...formState, jamMulai: e.target.value })}
-                    className="w-full px-3.5 py-2 text-sm font-mono tabular-nums border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
+                    className="w-full px-3.5 py-2 text-sm font-mono tabular-nums border border-slate-200 rounded-lg"
                   />
                 </div>
                 <div>
@@ -3220,7 +4676,7 @@ export default function App() {
                     required
                     value={formState.jamSelesai}
                     onChange={(e) => setFormState({ ...formState, jamSelesai: e.target.value })}
-                    className="w-full px-3.5 py-2 text-sm font-mono tabular-nums border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
+                    className="w-full px-3.5 py-2 text-sm font-mono tabular-nums border border-slate-200 rounded-lg"
                   />
                 </div>
               </div>
@@ -3234,21 +4690,60 @@ export default function App() {
                     type="text"
                     value={formState.lokasi}
                     onChange={(e) => setFormState({ ...formState, lokasi: e.target.value })}
-                    placeholder="Ruang Rapat Lt. 2 / Zoom"
-                    className="w-full px-3.5 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
+                    placeholder="Ruang Rapat Pusdalops / Zoom"
+                    className="w-full px-3.5 py-2 text-sm border border-slate-200 rounded-lg"
                   />
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-slate-700 mb-1">
-                    Penyelenggara / Disposisi
+                    Penyelenggara / Bidang
                   </label>
                   <input
                     type="text"
                     value={formState.penyelenggara}
                     onChange={(e) => setFormState({ ...formState, penyelenggara: e.target.value })}
-                    placeholder="Sekretariat / Bidang Terkait"
-                    className="w-full px-3.5 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
+                    placeholder="Sekretariat BPBD / Bidang PK"
+                    className="w-full px-3.5 py-2 text-sm border border-slate-200 rounded-lg"
                   />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Pejabat Pendamping / Arahan Disposisi
+                  </label>
+                  <input
+                    type="text"
+                    value={formState.pejabatPendamping}
+                    onChange={(e) =>
+                      setFormState({ ...formState, pejabatPendamping: e.target.value })
+                    }
+                    placeholder="Sekretaris BPBD / Kabid KL"
+                    className="w-full px-3.5 py-2 text-sm border border-slate-200 rounded-lg"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Status Disposisi
+                  </label>
+                  <select
+                    value={formState.statusDisposisi}
+                    onChange={(e) =>
+                      setFormState({
+                        ...formState,
+                        statusDisposisi: e.target.value as DisposisiStatus,
+                      })
+                    }
+                    disabled={!perms.canEditDisposition}
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white disabled:bg-slate-50"
+                  >
+                    {DISPOSISI_STATUSES.map((ds) => (
+                      <option key={ds} value={ds}>
+                        {ds}
+                      </option>
+                    ))}
+                  </select>
                 </div>
               </div>
 
@@ -3261,8 +4756,7 @@ export default function App() {
                     type="text"
                     value={formState.pakaian}
                     onChange={(e) => setFormState({ ...formState, pakaian: e.target.value })}
-                    placeholder="PDH / Batik / PSL"
-                    className="w-full px-3.5 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
+                    className="w-full px-3.5 py-2 text-sm border border-slate-200 rounded-lg"
                   />
                 </div>
                 <div>
@@ -3275,21 +4769,19 @@ export default function App() {
                       type="text"
                       value={formState.nomorSurat}
                       onChange={(e) => setFormState({ ...formState, nomorSurat: e.target.value })}
-                      placeholder="005/..."
-                      className="w-full pl-8 pr-3 py-2 text-sm font-mono border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
+                      placeholder="360/..."
+                      className="w-full pl-8 pr-3 py-2 text-sm font-mono border border-slate-200 rounded-lg"
                     />
                   </div>
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-slate-700 mb-1">
-                    Kategori
-                  </label>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">Kategori</label>
                   <select
                     value={formState.kategori}
                     onChange={(e) =>
                       setFormState({ ...formState, kategori: e.target.value as AgendaCategory })
                     }
-                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-600"
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white"
                   >
                     {CATEGORIES.map((c) => (
                       <option key={c} value={c}>
@@ -3300,7 +4792,7 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
                 <div className="sm:col-span-2">
                   <label className="block text-xs font-medium text-slate-700 mb-1">
                     Catatan / Keterangan
@@ -3309,27 +4801,37 @@ export default function App() {
                     type="text"
                     value={formState.catatan}
                     onChange={(e) => setFormState({ ...formState, catatan: e.target.value })}
-                    placeholder="Dokumen yang perlu dibawa, passcode Zoom, dll."
-                    className="w-full px-3.5 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
+                    className="w-full px-3.5 py-2 text-sm border border-slate-200 rounded-lg"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-slate-700 mb-1">
-                    Status
-                  </label>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">Status</label>
                   <select
                     value={formState.status}
                     onChange={(e) =>
                       setFormState({ ...formState, status: e.target.value as AgendaStatus })
                     }
-                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-600"
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white"
                   >
                     <option value="Terjadwal">Terjadwal</option>
+                    <option value="Draft">Draft</option>
                     <option value="Selesai">Selesai</option>
                     <option value="Dibatalkan">Dibatalkan</option>
                   </select>
                 </div>
               </div>
+
+              <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer pt-1">
+                <input
+                  type="checkbox"
+                  checked={formState.isConfidential}
+                  onChange={(e) =>
+                    setFormState({ ...formState, isConfidential: e.target.checked })
+                  }
+                  className="w-4 h-4 accent-[#0F2A4A]"
+                />
+                <span>Tandai sebagai Agenda Sifat Terbatas / Rahasia (khusus Pimpinan &amp; Disposisi)</span>
+              </label>
 
               <div className="pt-4 border-t border-slate-200 flex items-center justify-end gap-3">
                 <button
@@ -3341,9 +4843,234 @@ export default function App() {
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 text-sm font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-lg transition-colors whitespace-nowrap"
+                  className="px-5 py-2 text-sm font-semibold text-white bg-[#E65100] hover:bg-[#CC4700] rounded-lg transition-colors whitespace-nowrap"
                 >
                   {editingId ? 'Simpan Perubahan' : 'Simpan Agenda'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ==================================================================== */}
+      {/* DISPOSISI MODAL (PEJABAT DISPOSISI / SUPER ADMIN)                    */}
+      {/* ==================================================================== */}
+      {disposisiModalItem && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="bg-white border border-slate-200 rounded-xl max-w-md w-full shadow-xl overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
+              <h3 className="text-base font-bold text-slate-900">
+                Tetapkan Disposisi &amp; Pendamping
+              </h3>
+              <button
+                type="button"
+                onClick={() => setDisposisiModalItem(null)}
+                className="p-1 text-slate-400 hover:text-slate-700"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <form onSubmit={handleSaveDisposisi} className="p-5 space-y-4">
+              <div className="text-xs text-slate-600 bg-slate-50 border border-slate-200 p-3 rounded-lg">
+                <p className="font-semibold text-slate-900">{disposisiModalItem.judul}</p>
+                <p className="mt-1 font-mono">
+                  {formatTanggalPendek(disposisiModalItem.tanggal)} · {disposisiModalItem.jamMulai}–
+                  {disposisiModalItem.jamSelesai}
+                </p>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">
+                  Status Disposisi
+                </label>
+                <select
+                  value={disposisiDraftStatus}
+                  onChange={(e) => setDisposisiDraftStatus(e.target.value as DisposisiStatus)}
+                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white"
+                >
+                  {DISPOSISI_STATUSES.map((ds) => (
+                    <option key={ds} value={ds}>
+                      {ds}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">
+                  Pejabat Pendamping / Perwakilan
+                </label>
+                <input
+                  type="text"
+                  value={disposisiDraftPejabat}
+                  onChange={(e) => setDisposisiDraftPejabat(e.target.value)}
+                  placeholder="Contoh: Sekretaris BPBD / Kabid KL"
+                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                />
+              </div>
+              <div className="flex justify-end gap-2 pt-2 border-t border-slate-200">
+                <button
+                  type="button"
+                  onClick={() => setDisposisiModalItem(null)}
+                  className="px-4 py-2 text-xs font-medium text-slate-600"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 text-xs font-semibold bg-[#0F2A4A] text-white rounded-lg hover:bg-slate-800"
+                >
+                  Simpan Disposisi
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ==================================================================== */}
+      {/* USER MANAGEMENT MODAL (SUPER ADMIN)                                  */}
+      {/* ==================================================================== */}
+      {userModalOpen && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="bg-white border border-slate-200 rounded-xl max-w-lg w-full shadow-xl overflow-hidden">
+            <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+              <h3 className="text-base font-bold text-slate-900">
+                {editingUserId ? 'Edit Akun ASN' : 'Tambah Akun ASN Baru'}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setUserModalOpen(false)}
+                className="p-1 text-slate-400 hover:text-slate-700"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <form onSubmit={handleSaveUser} className="p-6 space-y-3.5">
+              {userFormError && (
+                <div className="p-2.5 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700">
+                  {userFormError}
+                </div>
+              )}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    NIP (18 Digit) *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={userForm.nip}
+                    onChange={(e) => setUserForm({ ...userForm, nip: e.target.value })}
+                    className="w-full px-3 py-2 text-sm font-mono border border-slate-200 rounded-lg"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Username Kedinasan *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={userForm.username}
+                    onChange={(e) => setUserForm({ ...userForm, username: e.target.value })}
+                    className="w-full px-3 py-2 text-sm font-mono border border-slate-200 rounded-lg"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">
+                  Nama Lengkap &amp; Gelar *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={userForm.namaLengkap}
+                  onChange={(e) => setUserForm({ ...userForm, namaLengkap: e.target.value })}
+                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                />
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">Jabatan</label>
+                  <input
+                    type="text"
+                    value={userForm.jabatan}
+                    onChange={(e) => setUserForm({ ...userForm, jabatan: e.target.value })}
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">Bidang</label>
+                  <input
+                    type="text"
+                    value={userForm.bidang}
+                    onChange={(e) => setUserForm({ ...userForm, bidang: e.target.value })}
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Email Dinas
+                  </label>
+                  <input
+                    type="email"
+                    value={userForm.email}
+                    onChange={(e) => setUserForm({ ...userForm, email: e.target.value })}
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Kata Sandi (min. 8 karakter) *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={userForm.password}
+                    onChange={(e) => setUserForm({ ...userForm, password: e.target.value })}
+                    className="w-full px-3 py-2 text-sm font-mono border border-slate-200 rounded-lg"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">Role RBAC</label>
+                <select
+                  value={userForm.roleKode}
+                  onChange={(e) =>
+                    setUserForm({ ...userForm, roleKode: e.target.value as RoleCode })
+                  }
+                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white"
+                >
+                  {(Object.keys(ROLE_META) as RoleCode[]).map((r) => (
+                    <option key={r} value={r}>
+                      {ROLE_META[r].label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="pt-3 border-t border-slate-200 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setUserModalOpen(false)}
+                  className="px-4 py-2 text-xs font-medium text-slate-600"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 text-xs font-semibold bg-[#0F2A4A] text-white rounded-lg hover:bg-slate-800"
+                >
+                  Simpan Akun
                 </button>
               </div>
             </form>
