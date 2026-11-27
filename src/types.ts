@@ -103,6 +103,8 @@ export interface AgendaItem {
   isConfidential: boolean;
   isUpdated?: boolean;
   zoomUrl?: string;
+  noWaAtasan?: string;
+  sudahDiingatkan?: boolean;
   ilustrasi?: PosterIllustrationKey;
   catatan: string;
   sumber: 'Manual' | 'e-Buddy';
@@ -304,6 +306,75 @@ export function formatRentangWaktu(
     return `${item.jamMulai} WIB - Selesai`;
   }
   return `${item.jamMulai} - ${item.jamSelesai} WIB`;
+}
+
+export function isAgendaDueSoonWIB(
+  item: Pick<AgendaItem, 'tanggal' | 'jamMulai' | 'jamSelesai' | 'sampaiSelesai' | 'status' | 'sudahDiingatkan'>,
+  nowMs: number = Date.now()
+): boolean {
+  if (item.status !== 'Terjadwal' || item.sudahDiingatkan) return false;
+  if (!item.tanggal || !/^\d{4}-\d{2}-\d{2}$/.test(item.tanggal)) return false;
+  if (!item.jamMulai || !/^\d{1,2}:\d{2}$/.test(item.jamMulai)) return false;
+
+  const startHHMM = item.jamMulai.padStart(5, '0');
+  const startMs = Date.parse(`${item.tanggal}T${startHHMM}:00+07:00`);
+  if (Number.isNaN(startMs)) return false;
+
+  const endHHMM = item.sampaiSelesai
+    ? minutesToTime(Math.max(timeToMinutes(startHHMM) + 120, timeToMinutes(item.jamSelesai || startHHMM)))
+    : (item.jamSelesai || startHHMM).padStart(5, '0');
+  const endMs = Date.parse(`${item.tanggal}T${endHHMM}:00+07:00`);
+  const safeEndMs = Number.isNaN(endMs) || endMs <= startMs ? startMs + 2 * 60 * 60 * 1000 : endMs;
+
+  const diffMinutes = (startMs - nowMs) / 60000;
+  return diffMinutes <= 60 && nowMs <= safeEndMs;
+}
+
+export function formatWhatsAppNumber(raw?: string | null): string {
+  const digits = (raw || '').replace(/\D/g, '');
+  if (!digits) return '';
+  if (digits.startsWith('08')) {
+    return `628${digits.slice(2)}`;
+  }
+  if (digits.startsWith('0')) {
+    return `62${digits.slice(1)}`;
+  }
+  return digits;
+}
+
+export function buildAtasanReminderWhatsAppUrl(item: AgendaItem): string {
+  const waktuText = item.sampaiSelesai
+    ? `${item.jamMulai} - Selesai`
+    : `${item.jamMulai} - ${item.jamSelesai}`;
+
+  const lines = [
+    '*PENGINGAT AGENDA KEGIATAN (1 JAM LAGI)*',
+    '',
+    'Yth. Bapak/Ibu Pimpinan,',
+    'Mengingatkan kembali jadwal kegiatan yang akan segera dilaksanakan:',
+    '',
+    `📌 *Kegiatan:* ${item.judul}`,
+    `🗓️ *Hari/Tanggal:* ${formatTanggalLengkap(item.tanggal)}`,
+    `⏰ *Waktu:* ${waktuText} WIB`,
+    `📍 *Tempat:* ${item.lokasi || '-'}`,
+    `👔 *Pakaian:* ${item.pakaian || 'Menyesuaikan'}`,
+    `👥 *Pendamping:* ${item.pejabatPendamping || item.penyelenggara || '-'}`,
+  ];
+
+  if (item.zoomUrl && item.zoomUrl.trim()) {
+    lines.push(`🔗 *Tautan Zoom:* ${item.zoomUrl.trim()}`);
+  }
+  if (item.catatan && item.catatan.trim()) {
+    lines.push(`📝 *Catatan:* ${item.catatan.trim()}`);
+  }
+
+  lines.push('');
+  lines.push('Demikian disampaikan, terima kasih.');
+  lines.push('_Dikirim melalui Sistem Agenda SIAGA_');
+
+  const encoded = encodeURIComponent(lines.join('\n'));
+  const phone = formatWhatsAppNumber(item.noWaAtasan);
+  return phone ? `https://wa.me/${phone}?text=${encoded}` : `https://wa.me/?text=${encoded}`;
 }
 
 export function getConflictsForCandidate(

@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   Clipboard,
   ClipboardPaste,
+  Clock,
   Copy,
   Database,
   Download,
@@ -21,6 +22,7 @@ import {
   LogOut,
   MapPin,
   Menu,
+  MessageCircle,
   Plus,
   Share2,
   ShieldCheck,
@@ -28,6 +30,7 @@ import {
   Trash2,
   Upload,
   UserPlus,
+  Volume2,
   X,
 } from 'lucide-react';
 import { DashboardView } from './DashboardView';
@@ -40,6 +43,7 @@ import {
   resolvePosterIllustrationKey,
   sharePosterWithImage,
 } from './posterCanvas';
+import { playReminderChime, unlockAndTestReminderSound } from './soundAlert';
 import {
   deleteAgendaFromSupabase,
   deleteUserFromSupabase,
@@ -85,21 +89,58 @@ import {
   SESSION_LOCAL_KEY,
   SESSION_TEMP_KEY,
   UserAccount,
+  buildAtasanReminderWhatsAppUrl,
   createInitialMasterUnits,
   extractEBuddyText,
   findNextAvailableSlot,
   formatRentangWaktu,
   formatTanggalLengkap,
+  formatWhatsAppNumber,
   getConflictsForCandidate,
   getEBuddyTemplates,
   getLocalISODate,
   getPermissions,
+  isAgendaDueSoonWIB,
   minutesToTime,
   timeToMinutes,
 } from './types';
 
 const SIDOARJO_LOGO = '/assets/aistudio/Coat_of_Arms_of_Sidoarjo_Regency__2__55bcc6f5.png';
 const BPBD_LOGO = '/assets/aistudio/images__14__e7f780c6.jpeg';
+const ALARM_STORAGE_KEY = 'sudah_bunyi_alarm';
+
+function getTriggeredAlarmIds(): string[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.sessionStorage.getItem(ALARM_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveTriggeredAlarmId(id: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const current = getTriggeredAlarmIds();
+    if (!current.includes(id)) {
+      window.sessionStorage.setItem(ALARM_STORAGE_KEY, JSON.stringify([...current, id]));
+    }
+  } catch {
+    // ignore sessionStorage quota/privacy errors
+  }
+}
+
+function getMinutesUntilAgendaStartWIB(item: AgendaItem, nowMs: number = Date.now()): number | null {
+  if (!item.tanggal || !/^\d{4}-\d{2}-\d{2}$/.test(item.tanggal)) return null;
+  if (!item.jamMulai || !/^\d{1,2}:\d{2}$/.test(item.jamMulai)) return null;
+  const startHHMM = item.jamMulai.padStart(5, '0');
+  const startMs = Date.parse(`${item.tanggal}T${startHHMM}:00+07:00`);
+  if (Number.isNaN(startMs)) return null;
+  return (startMs - nowMs) / 60000;
+}
 
 interface ToastMessage {
   id: string;
@@ -125,6 +166,8 @@ interface AgendaFormState {
   isConfidential: boolean;
   isUpdated: boolean;
   zoomUrl: string;
+  noWaAtasan: string;
+  sudahDiingatkan: boolean;
   ilustrasi: PosterIllustrationKey;
   catatan: string;
   sumber: 'Manual' | 'e-Buddy';
@@ -400,6 +443,17 @@ export default function App() {
   const [adminTab, setAdminTab] = useState<'users' | 'audit'>('users');
   const [auditFilter, setAuditFilter] = useState<'ALL' | 'SUKSES' | 'GAGAL' | 'PERINGATAN'>('ALL');
   const [reminderPopupOpen, setReminderPopupOpen] = useState(false);
+  const [reminderNowMs, setReminderNowMs] = useState<number>(() => Date.now());
+  const [alarmAgenda, setAlarmAgenda] = useState<AgendaItem | null>(null);
+  const [soundReady, setSoundReady] = useState(false);
+  const autoRemindedIdsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setReminderNowMs(Date.now());
+    }, 30000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const notify = (text: string, tone: ToastMessage['tone'] = 'info') => {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -438,24 +492,82 @@ export default function App() {
     return agendas.filter((a) => !a.isConfidential);
   }, [agendas, perms.canAccessConfidential]);
 
-  // Sidebar badge & click-triggered simultaneous agenda reminder metrics
+  // Sidebar badge & supervisor-phone-filtered reminder metrics
   const todayActiveCount = useMemo(() => {
     return visibleAgendas.filter(
       (a) => a.tanggal === selectedDate && a.status !== 'Dibatalkan'
     ).length;
   }, [visibleAgendas, selectedDate]);
 
-  const simultaneousDayItems = useMemo(() => {
+  const reminderSupervisorItems = useMemo(() => {
     return visibleAgendas
-      .filter(
-        (a) =>
-          a.tanggal === selectedDate &&
-          a.status !== 'Dibatalkan' &&
-          a.status !== 'Draft' &&
-          getConflictsForCandidate(agendas, a).length > 0
-      )
-      .sort((a, b) => timeToMinutes(a.jamMulai) - timeToMinutes(b.jamMulai));
-  }, [visibleAgendas, agendas, selectedDate]);
+      .filter((a) => {
+        const hasPhone = Boolean(formatWhatsAppNumber(a.noWaAtasan));
+        if (!hasPhone) return false;
+        if (a.status === 'Dibatalkan' || a.status === 'Draft') return false;
+        return a.tanggal === selectedDate || isAgendaDueSoonWIB(a, reminderNowMs);
+      })
+      .sort((a, b) => {
+        const aDue = isAgendaDueSoonWIB(a, reminderNowMs) ? 0 : 1;
+        const bDue = isAgendaDueSoonWIB(b, reminderNowMs) ? 0 : 1;
+        if (aDue !== bDue) return aDue - bDue;
+        return a.tanggal === b.tanggal
+          ? timeToMinutes(a.jamMulai) - timeToMinutes(b.jamMulai)
+          : a.tanggal.localeCompare(b.tanggal);
+      });
+  }, [visibleAgendas, selectedDate, reminderNowMs]);
+
+  const dueSoonSupervisorItems = useMemo(
+    () => reminderSupervisorItems.filter((a) => isAgendaDueSoonWIB(a, reminderNowMs)),
+    [reminderSupervisorItems, reminderNowMs]
+  );
+
+  useEffect(() => {
+    if (!currentUser || dueSoonSupervisorItems.length === 0 || alarmAgenda) return;
+    const hasUnshown = dueSoonSupervisorItems.some((a) => !autoRemindedIdsRef.current.has(a.id));
+    if (hasUnshown) {
+      dueSoonSupervisorItems.forEach((a) => autoRemindedIdsRef.current.add(a.id));
+      setReminderPopupOpen(true);
+    }
+  }, [currentUser, dueSoonSupervisorItems, alarmAgenda]);
+
+  // Automatic 30-second WIB H-1h reminder monitor (sound + modal + sessionStorage 'sudah_bunyi_alarm')
+  useEffect(() => {
+    if (!currentUser) return;
+
+    const checkUpcomingAgendasWIB = () => {
+      const nowMs = Date.now();
+      setReminderNowMs(nowMs);
+      const triggeredIds = getTriggeredAlarmIds();
+
+      const dueItem = visibleAgendas
+        .filter((item) => {
+          if (item.status !== 'Terjadwal' || item.sudahDiingatkan) return false;
+          if (triggeredIds.includes(item.id)) return false;
+          const diffMinutes = getMinutesUntilAgendaStartWIB(item, nowMs);
+          if (diffMinutes === null) return false;
+          return diffMinutes >= 1 && diffMinutes <= 60;
+        })
+        .sort((a, b) => {
+          const diffA = getMinutesUntilAgendaStartWIB(a, nowMs) ?? 999;
+          const diffB = getMinutesUntilAgendaStartWIB(b, nowMs) ?? 999;
+          return diffA - diffB;
+        })[0];
+
+      if (dueItem) {
+        saveTriggeredAlarmId(dueItem.id);
+        autoRemindedIdsRef.current.add(dueItem.id);
+        setAlarmAgenda(dueItem);
+        void playReminderChime().then((played) => {
+          if (played) setSoundReady(true);
+        });
+      }
+    };
+
+    checkUpcomingAgendasWIB();
+    const intervalId = window.setInterval(checkUpcomingAgendasWIB, 30000);
+    return () => window.clearInterval(intervalId);
+  }, [currentUser, visibleAgendas]);
 
   // Poster agendas list
   const posterAgendas = useMemo(() => {
@@ -718,6 +830,8 @@ export default function App() {
       isConfidential: Boolean(preset?.isConfidential),
       isUpdated: Boolean(preset?.isUpdated ?? true),
       zoomUrl: preset?.zoomUrl || '',
+      noWaAtasan: preset?.noWaAtasan || '',
+      sudahDiingatkan: Boolean(preset?.sudahDiingatkan),
       ilustrasi: preset?.ilustrasi || 'auto',
       catatan: preset?.catatan || '',
       sumber: preset?.sumber || 'Manual',
@@ -748,6 +862,8 @@ export default function App() {
       isConfidential: item.isConfidential,
       isUpdated: Boolean(item.isUpdated),
       zoomUrl: item.zoomUrl || '',
+      noWaAtasan: item.noWaAtasan || '',
+      sudahDiingatkan: Boolean(item.sudahDiingatkan),
       ilustrasi: item.ilustrasi || 'auto',
       catatan: item.catatan,
       sumber: item.sumber,
@@ -821,6 +937,8 @@ export default function App() {
             judul: agendaForm.judul.trim(),
             lokasi: agendaForm.lokasi.trim() || 'Menunggu konfirmasi',
             zoomUrl: sanitizeZoomUrl(agendaForm.zoomUrl),
+            noWaAtasan: agendaForm.noWaAtasan.trim(),
+            sudahDiingatkan: agendaForm.sudahDiingatkan,
           },
           existingItem
         );
@@ -846,6 +964,8 @@ export default function App() {
           judul: agendaForm.judul.trim(),
           lokasi: agendaForm.lokasi.trim() || 'Menunggu konfirmasi',
           zoomUrl: sanitizeZoomUrl(agendaForm.zoomUrl),
+          noWaAtasan: agendaForm.noWaAtasan.trim(),
+          sudahDiingatkan: agendaForm.sudahDiingatkan,
           createdBy: currentUser?.namaLengkap || 'Operator',
           createdAt: new Date().toISOString(),
         };
@@ -919,6 +1039,32 @@ export default function App() {
       const msg = err instanceof Error ? err.message : 'Gagal memperbarui status agenda.';
       setSupabaseError(msg);
       notify(`Gagal update status di Supabase: ${msg}`, 'warning');
+    }
+  };
+
+  const handleRemindAtasan = async (item: AgendaItem) => {
+    setAgendas((prev) =>
+      prev.map((a) => (a.id === item.id ? { ...a, sudahDiingatkan: true } : a))
+    );
+    if (focusedAgenda?.id === item.id) {
+      setFocusedAgenda({ ...focusedAgenda, sudahDiingatkan: true });
+    }
+    try {
+      const updated = await updateAgendaInSupabase(item.id, { sudahDiingatkan: true }, item);
+      await loadAgendasFromDb(true);
+      if (focusedAgenda?.id === item.id) {
+        setFocusedAgenda(updated);
+      }
+      setSupabaseError('');
+      appendAudit(
+        'PENGINGAT_WA_ATASAN',
+        'SUKSES',
+        `Mengirim pengingat WhatsApp atasan untuk "${item.judul}".`
+      );
+      notify('Status pengingat atasan disimpan: ✓ Sudah Diingatkan.', 'success');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Gagal menyimpan status pengingat ke Supabase.';
+      notify(msg, 'warning');
     }
   };
 
@@ -2033,6 +2179,28 @@ export default function App() {
             </span>
             <button
               type="button"
+              onClick={async () => {
+                const played = await unlockAndTestReminderSound();
+                setSoundReady(true);
+                notify(
+                  played
+                    ? 'Izin suara aktif! Alarm pengingat otomatis H-1 jam siap berbunyi.'
+                    : 'Izin audio diaktifkan untuk sesi ini.',
+                  played ? 'success' : 'info'
+                );
+              }}
+              title="Uji coba suara notifikasi & aktifkan izin audio browser untuk alarm H-1 jam"
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-bold transition cursor-pointer ${
+                soundReady
+                  ? 'border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-800'
+                  : 'border-orange-300 bg-orange-50 hover:bg-orange-100 text-orange-800'
+              }`}
+            >
+              <Volume2 className="w-3.5 h-3.5 shrink-0" />
+              <span className="whitespace-nowrap">🔔 Tes Suara Pengingat</span>
+            </button>
+            <button
+              type="button"
               onClick={() => {
                 setImportError('');
                 setImportPreview(null);
@@ -2044,17 +2212,25 @@ export default function App() {
               <Database className="w-3.5 h-3.5" />
               <span className="hidden sm:inline">Backup / Import</span>
             </button>
-            {simultaneousDayItems.length > 0 && (
+            {reminderSupervisorItems.length > 0 && (
               <button
                 type="button"
                 onClick={() => setReminderPopupOpen(true)}
-                title={`${simultaneousDayItems.length} agenda bersamaan pada ${formatTanggalLengkap(selectedDate)} — Klik untuk tampilkan`}
-                aria-label="Pengingat agenda bersamaan"
-                className="relative w-9 h-9 rounded-full bg-amber-50 hover:bg-amber-100 border border-amber-300 text-amber-700 flex items-center justify-center transition shadow-xs cursor-pointer"
+                title={`${reminderSupervisorItems.length} agenda dengan No. HP Atasan — Klik untuk pengingat`}
+                aria-label="Pengingat agenda atasan"
+                className={`relative w-9 h-9 rounded-full border flex items-center justify-center transition shadow-xs cursor-pointer ${
+                  dueSoonSupervisorItems.length > 0
+                    ? 'bg-orange-50 hover:bg-orange-100 border-orange-400 text-red-600'
+                    : 'bg-amber-50 hover:bg-amber-100 border-amber-300 text-amber-700'
+                }`}
               >
                 <BellRing className="w-4 h-4" />
-                <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-amber-600 text-white text-[10px] font-extrabold flex items-center justify-center shadow-xs">
-                  {simultaneousDayItems.length}
+                <span
+                  className={`absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full text-white text-[10px] font-extrabold flex items-center justify-center shadow-xs ${
+                    dueSoonSupervisorItems.length > 0 ? 'bg-red-600 animate-pulse' : 'bg-amber-600'
+                  }`}
+                >
+                  {reminderSupervisorItems.length}
                 </span>
               </button>
             )}
@@ -2111,6 +2287,7 @@ export default function App() {
               onOpenEditAgenda={openEditAgendaModal}
               onRequestDeleteAgenda={handleRequestDeleteAgenda}
               onToggleStatus={handleToggleStatus}
+              onRemindAtasan={handleRemindAtasan}
               onOpenSinglePoster={(item) => {
                 setFocusedAgenda(item);
                 setCardMode('tunggal');
@@ -2643,7 +2820,7 @@ export default function App() {
                 <div className="xl:col-span-7 rounded-2xl border border-slate-200 bg-white p-4 sm:p-5 shadow-sm space-y-3">
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-bold uppercase tracking-wider text-slate-500">
-                      Pratinjau Poster WhatsApp (Resolusi HD 2160px)
+                      Pratinjau Poster WhatsApp (Rasio 2:3 · HD 2160×3240)
                     </span>
                     <span className="text-xs font-semibold text-slate-600">
                       {posterAgendas.length} kegiatan ditampilkan
@@ -3173,17 +3350,35 @@ export default function App() {
                 </select>
               </div>
 
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Tautan Zoom / Rapat Daring (Opsional)
-                </label>
-                <input
-                  type="url"
-                  value={agendaForm.zoomUrl}
-                  onChange={(e) => setAgendaForm({ ...agendaForm, zoomUrl: e.target.value })}
-                  placeholder="https://zoom.us/j/..."
-                  className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm font-mono"
-                />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    Nomor WhatsApp Atasan (Opsional)
+                  </label>
+                  <input
+                    type="tel"
+                    inputMode="numeric"
+                    value={agendaForm.noWaAtasan}
+                    onChange={(e) => setAgendaForm({ ...agendaForm, noWaAtasan: e.target.value })}
+                    placeholder="Contoh: 6281234567890"
+                    className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm font-mono"
+                  />
+                  <p className="text-[11px] text-slate-500 mt-1">
+                    Format internasional tanpa + (contoh: 6281234567890). Awalan 08 otomatis diubah ke 628.
+                  </p>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    Tautan Zoom / Rapat Daring (Opsional)
+                  </label>
+                  <input
+                    type="url"
+                    value={agendaForm.zoomUrl}
+                    onChange={(e) => setAgendaForm({ ...agendaForm, zoomUrl: e.target.value })}
+                    placeholder="https://zoom.us/j/..."
+                    className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm font-mono"
+                  />
+                </div>
               </div>
 
               <div>
@@ -3452,7 +3647,7 @@ export default function App() {
         </div>
       )}
 
-      {/* MODAL: CLICK-TRIGGERED PENGINGAT AGENDA BERSAMAAN */}
+      {/* MODAL: PENGINGAT AGENDA KHUSUS ATASAN YANG SUDAH DIBERI NO. HP */}
       {reminderPopupOpen && (
         <div
           className="fixed inset-0 z-50 bg-slate-900/55 flex items-center justify-center p-4"
@@ -3469,10 +3664,10 @@ export default function App() {
                 </div>
                 <div className="min-w-0">
                   <h3 className="text-sm sm:text-base font-bold truncate">
-                    Pengingat Agenda Bersamaan
+                    Pengingat Agenda Atasan
                   </h3>
                   <p className="text-[11px] text-emerald-100 truncate">
-                    {formatTanggalLengkap(selectedDate)} &middot; {simultaneousDayItems.length} kegiatan beririsan waktu
+                    {formatTanggalLengkap(selectedDate)} &middot; {reminderSupervisorItems.length} agenda memiliki No. HP Atasan
                   </p>
                 </div>
               </div>
@@ -3487,88 +3682,78 @@ export default function App() {
             </div>
 
             <div className="p-4 sm:p-5 overflow-y-auto space-y-3">
-              {simultaneousDayItems.length === 0 ? (
+              {reminderSupervisorItems.length === 0 ? (
                 <p className="text-sm text-slate-500 text-center py-6">
-                  Tidak ada agenda dengan jam bersamaan pada tanggal ini.
+                  Belum ada agenda dengan Nomor WhatsApp Atasan pada tanggal ini.
                 </p>
               ) : (
-                simultaneousDayItems.map((item) => {
+                reminderSupervisorItems.map((item) => {
+                  const dueSoon = isAgendaDueSoonWIB(item, reminderNowMs);
+                  const formattedPhone = formatWhatsAppNumber(item.noWaAtasan);
+                  const waUrl = buildAtasanReminderWhatsAppUrl(item);
                   const overlaps = getConflictsForCandidate(agendas, item);
-                  const nextSlot = findNextAvailableSlot(
-                    agendas,
-                    item.tanggal,
-                    timeToMinutes(item.jamSelesai) - timeToMinutes(item.jamMulai),
-                    item.id
-                  );
                   return (
                     <div
                       key={item.id}
-                      className="rounded-xl border border-amber-200 bg-amber-50/40 p-3.5 space-y-2"
+                      className={`rounded-xl border p-3.5 space-y-2 ${
+                        dueSoon
+                          ? 'border-orange-300 bg-orange-50/55'
+                          : 'border-emerald-200 bg-emerald-50/35'
+                      }`}
                     >
                       <div className="flex flex-wrap items-center justify-between gap-2">
-                        <span className="font-mono text-xs font-bold px-2.5 py-0.5 rounded-md bg-amber-100 text-amber-900">
-                          {formatRentangWaktu(item)}
-                        </span>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="font-mono text-xs font-bold px-2.5 py-0.5 rounded-md bg-amber-100 text-amber-900">
+                            {formatRentangWaktu(item)}
+                          </span>
+                          <span className="font-mono text-[11px] font-bold px-2 py-0.5 rounded-md bg-white border border-slate-200 text-slate-700">
+                            WA: {formattedPhone}
+                          </span>
+                        </div>
                         <span className="text-[11px] font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md">
                           PIC: {item.pejabatPendamping || item.penyelenggara}
                         </span>
                       </div>
+
+                      {dueSoon && (
+                        <div className="inline-flex items-center gap-1 rounded-md bg-gradient-to-r from-orange-600 to-red-600 text-white px-2.5 py-0.5 text-[10px] font-extrabold shadow-xs">
+                          ⏰ 1 Jam Lagi - Segera Ingatkan Atasan
+                        </div>
+                      )}
+
                       <h4 className="text-sm font-bold text-slate-900 leading-snug">
                         {item.judul}
                       </h4>
-                      <p className="text-xs text-slate-600">{item.lokasi}</p>
-                      <div className="text-[11px] text-amber-800 space-y-0.5 pt-1 border-t border-amber-200/70">
-                        {overlaps.map((ov) => (
-                          <div key={ov.agenda.id}>
-                            &bull; Bersamaan {ov.overlapMinutes} mnt dengan:{' '}
-                            <strong className="text-slate-900">{ov.agenda.judul}</strong> (
-                            {formatRentangWaktu(ov.agenda)})
-                          </div>
-                        ))}
-                      </div>
-                      {perms.canEditAgenda && (
-                        <div className="flex flex-wrap items-center gap-2 pt-1.5">
-                          {nextSlot && (
-                            <button
-                              type="button"
-                              onClick={async () => {
-                                try {
-                                  const updated = await updateAgendaInSupabase(
-                                    item.id,
-                                    {
-                                      jamMulai: nextSlot.jamMulai,
-                                      jamSelesai: nextSlot.jamSelesai,
-                                      sampaiSelesai: false,
-                                      isUpdated: true,
-                                    },
-                                    item
-                                  );
-                                  await loadAgendasFromDb(true);
-                                  if (focusedAgenda?.id === updated.id) {
-                                    setFocusedAgenda(updated);
-                                  }
-                                  appendAudit(
-                                    'GESER_JADWAL',
-                                    'SUKSES',
-                                    `Menggeser "${item.judul}" ke ${nextSlot.jamMulai}-${nextSlot.jamSelesai} WIB di Supabase.`
-                                  );
-                                  notify(
-                                    `Jadwal digeser ke ${nextSlot.jamMulai} - ${nextSlot.jamSelesai} WIB.`,
-                                    'success'
-                                  );
-                                } catch (err) {
-                                  const msg =
-                                    err instanceof Error
-                                      ? err.message
-                                      : 'Gagal menggeser jadwal di Supabase.';
-                                  notify(msg, 'warning');
-                                }
-                              }}
-                              className="px-2.5 py-1.5 rounded-lg bg-[#064E3B] hover:bg-[#065F46] text-white text-[11px] font-bold"
-                            >
-                              Geser ke {nextSlot.jamMulai} - {nextSlot.jamSelesai} WIB
-                            </button>
-                          )}
+                      <p className="text-xs text-slate-600">
+                        {formatTanggalLengkap(item.tanggal)} &middot; {item.lokasi}
+                      </p>
+
+                      {overlaps.length > 0 && (
+                        <p className="text-[11px] text-amber-800 pt-1 border-t border-amber-200/70">
+                          Catatan jadwal: bersamaan waktu dengan {overlaps.length} kegiatan lain.
+                        </p>
+                      )}
+
+                      <div className="flex flex-wrap items-center gap-2 pt-1.5">
+                        <a
+                          href={waUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={() => handleRemindAtasan(item)}
+                          className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition shadow-2xs ${
+                            item.sudahDiingatkan
+                              ? 'bg-emerald-50 border border-emerald-300 text-emerald-800 hover:bg-emerald-100'
+                              : 'bg-[#16A34A] hover:bg-[#15803D] text-white'
+                          }`}
+                        >
+                          <MessageCircle className="w-3.5 h-3.5" />
+                          <span>
+                            {item.sudahDiingatkan
+                              ? '✓ Sudah Diingatkan'
+                              : 'Ingatkan Atasan (WA)'}
+                          </span>
+                        </a>
+                        {perms.canEditAgenda && (
                           <button
                             type="button"
                             onClick={() => {
@@ -3579,8 +3764,8 @@ export default function App() {
                           >
                             Edit
                           </button>
-                        </div>
-                      )}
+                        )}
+                      </div>
                     </div>
                   );
                 })
@@ -3595,6 +3780,118 @@ export default function App() {
               >
                 Tutup Pengingat
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: ALARM PENGINGAT OTOMATIS 1 JAM SEBELUM KEGIATAN (WIB) */}
+      {alarmAgenda && (
+        <div
+          className="fixed inset-0 z-[80] bg-slate-950/70 backdrop-blur-[2px] flex items-center justify-center p-4"
+          onClick={() => setAlarmAgenda(null)}
+        >
+          <div
+            className="w-full max-w-lg rounded-2xl bg-white shadow-2xl border-2 border-red-500 ring-4 ring-orange-500/25 overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-5 py-4 bg-gradient-to-r from-red-700 via-red-600 to-orange-500 text-white flex items-start justify-between gap-3">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-10 h-10 rounded-xl bg-white/20 border border-white/35 flex items-center justify-center shrink-0 animate-pulse">
+                  <BellRing className="w-5 h-5 text-white" />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="text-sm sm:text-base font-extrabold tracking-tight leading-snug">
+                    ⏰ PENGINGAT 1 JAM SEBELUM KEGIATAN
+                  </h3>
+                  <p className="text-[11px] text-orange-100 font-medium mt-0.5">
+                    Pemantau Otomatis Jadwal WIB &middot; Segera ingatkan atasan
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAlarmAgenda(null)}
+                className="p-1.5 rounded-lg text-white/85 hover:bg-white/15 hover:text-white shrink-0"
+                aria-label="Tutup peringatan"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              <div className="rounded-xl border border-orange-200 bg-orange-50/70 p-4 space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-red-600 text-white text-xs font-extrabold">
+                    <Clock className="w-3.5 h-3.5" />
+                    {formatRentangWaktu(alarmAgenda)}
+                  </span>
+                  {(() => {
+                    const minsLeft = getMinutesUntilAgendaStartWIB(alarmAgenda, reminderNowMs);
+                    if (minsLeft === null) return null;
+                    return (
+                      <span className="px-2.5 py-1 rounded-lg bg-white border border-orange-300 text-orange-800 text-xs font-extrabold">
+                        Mulai dalam {Math.max(1, Math.round(minsLeft))} menit lagi
+                      </span>
+                    );
+                  })()}
+                </div>
+
+                <div>
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-orange-800">
+                    Nama Kegiatan
+                  </p>
+                  <h4 className="text-base font-extrabold text-slate-900 leading-snug mt-0.5">
+                    {alarmAgenda.judul}
+                  </h4>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-2 border-t border-orange-200/80 text-xs">
+                  <div>
+                    <p className="text-[11px] font-bold text-slate-500">Tanggal &amp; Jam</p>
+                    <p className="font-semibold text-slate-800">
+                      {formatTanggalLengkap(alarmAgenda.tanggal)} &middot; {formatRentangWaktu(alarmAgenda)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-[11px] font-bold text-slate-500">Pendamping / PIC</p>
+                    <p className="font-semibold text-slate-800">
+                      {alarmAgenda.pejabatPendamping || alarmAgenda.penyelenggara || '-'}
+                    </p>
+                  </div>
+                  <div className="sm:col-span-2">
+                    <p className="text-[11px] font-bold text-slate-500">Lokasi</p>
+                    <p className="font-semibold text-slate-800 flex items-start gap-1">
+                      <MapPin className="w-3.5 h-3.5 text-red-600 shrink-0 mt-0.5" />
+                      <span>{alarmAgenda.lokasi || '-'}</span>
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-2.5 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setAlarmAgenda(null)}
+                  className="px-4 py-2.5 rounded-xl bg-slate-200 hover:bg-slate-300 text-slate-800 text-xs font-bold transition cursor-pointer text-center"
+                >
+                  Tutup / Ingatkan Nanti
+                </button>
+                <a
+                  href={buildAtasanReminderWhatsAppUrl(alarmAgenda)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={() => {
+                    const target = alarmAgenda;
+                    setAlarmAgenda(null);
+                    void handleRemindAtasan(target);
+                  }}
+                  className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-[#16A34A] hover:bg-[#15803D] text-white text-xs font-extrabold shadow-sm transition"
+                >
+                  <MessageCircle className="w-4 h-4 shrink-0" />
+                  <span>Kirim Pengingat WA ke Atasan Sekarang</span>
+                </a>
+              </div>
             </div>
           </div>
         </div>

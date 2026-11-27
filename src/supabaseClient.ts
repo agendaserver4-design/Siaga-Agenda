@@ -132,9 +132,23 @@ function assertClient(): SupabaseClient {
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 // =========================================================================
-// TABEL `agenda` (id, judul, tanggal, waktu, tempat, bidang_pic, status)
+// TABEL `agenda` (id, judul, tanggal, waktu, tempat, bidang_pic, status, no_wa_atasan, sudah_diingatkan)
 // =========================================================================
-const AGENDA_SELECT_COLUMNS = 'id, judul, tanggal, waktu, tempat, bidang_pic, status';
+const AGENDA_BASE_SELECT_COLUMNS = 'id, judul, tanggal, waktu, tempat, bidang_pic, status';
+const AGENDA_SELECT_COLUMNS =
+  'id, judul, tanggal, waktu, tempat, bidang_pic, status, no_wa_atasan, sudah_diingatkan';
+
+function isMissingColumnError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const e = err as { code?: string; message?: string; details?: string };
+  const text = `${e.message || ''} ${e.details || ''}`.toLowerCase();
+  return (
+    e.code === '42703' ||
+    e.code === 'PGRST204' ||
+    text.includes('no_wa_atasan') ||
+    text.includes('sudah_diingatkan')
+  );
+}
 
 export function mapAgendaRowFromDb(row: Record<string, unknown>): AgendaItem {
   const parsedWaktu = parseWaktuRange(row.waktu);
@@ -162,6 +176,8 @@ export function mapAgendaRowFromDb(row: Record<string, unknown>): AgendaItem {
     isConfidential: Boolean(row.is_confidential ?? false),
     isUpdated: Boolean(row.is_updated ?? false),
     zoomUrl: sanitizeZoomUrl((row.zoom_url ?? row.zoomUrl) as string | undefined),
+    noWaAtasan: row.no_wa_atasan ? String(row.no_wa_atasan).trim() : '',
+    sudahDiingatkan: Boolean(row.sudah_diingatkan ?? false),
     ilustrasi: VALID_ILLUSTRATIONS.has(rawIlustrasi) ? rawIlustrasi : 'auto',
     catatan: String(row.catatan || ''),
     sumber: row.sumber === 'e-Buddy' ? 'e-Buddy' : 'Manual',
@@ -170,8 +186,8 @@ export function mapAgendaRowFromDb(row: Record<string, unknown>): AgendaItem {
   };
 }
 
-export function mapAgendaToDbPayload(item: AgendaItem) {
-  return {
+export function mapAgendaToDbPayload(item: AgendaItem, includeReminderCols = true) {
+  const base = {
     id: item.id,
     judul: item.judul,
     tanggal: item.tanggal,
@@ -180,11 +196,18 @@ export function mapAgendaToDbPayload(item: AgendaItem) {
     bidang_pic: (item.pejabatPendamping || item.penyelenggara || 'Sekretariat BPBD').trim(),
     status: item.status,
   };
+  if (!includeReminderCols) return base;
+  return {
+    ...base,
+    no_wa_atasan: item.noWaAtasan?.trim() || null,
+    sudah_diingatkan: Boolean(item.sudahDiingatkan),
+  };
 }
 
 function mapAgendaPatchToDbPayload(
   patch: Partial<AgendaItem>,
-  baseItem?: AgendaItem
+  baseItem?: AgendaItem,
+  includeReminderCols = true
 ): Record<string, unknown> {
   const payload: Record<string, unknown> = {};
   if (patch.judul !== undefined) payload.judul = patch.judul;
@@ -213,6 +236,14 @@ function mapAgendaPatchToDbPayload(
     payload.bidang_pic = pic || 'Sekretariat BPBD';
   }
   if (patch.status !== undefined) payload.status = patch.status;
+  if (includeReminderCols) {
+    if (patch.noWaAtasan !== undefined) {
+      payload.no_wa_atasan = patch.noWaAtasan.trim() || null;
+    }
+    if (patch.sudahDiingatkan !== undefined) {
+      payload.sudah_diingatkan = Boolean(patch.sudahDiingatkan);
+    }
+  }
   return payload;
 }
 
@@ -223,6 +254,18 @@ export async function fetchAgendasFromSupabase(): Promise<AgendaItem[]> {
     .select(AGENDA_SELECT_COLUMNS)
     .order('tanggal', { ascending: true })
     .order('waktu', { ascending: true });
+
+  if (error && isMissingColumnError(error)) {
+    const fallback = await client
+      .from('agenda')
+      .select(AGENDA_BASE_SELECT_COLUMNS)
+      .order('tanggal', { ascending: true })
+      .order('waktu', { ascending: true });
+    if (fallback.error) {
+      throw new Error(formatSupabaseError(fallback.error));
+    }
+    return (fallback.data || []).map((row) => mapAgendaRowFromDb(row as Record<string, unknown>));
+  }
 
   if (error) {
     throw new Error(formatSupabaseError(error));
@@ -241,7 +284,7 @@ export async function fetchConflictsFromSupabase(candidate: {
   const client = assertClient();
   const { data, error } = await client
     .from('agenda')
-    .select(AGENDA_SELECT_COLUMNS)
+    .select(AGENDA_BASE_SELECT_COLUMNS)
     .eq('tanggal', candidate.tanggal)
     .neq('status', 'Dibatalkan')
     .neq('status', 'Draft');
@@ -255,12 +298,29 @@ export async function fetchConflictsFromSupabase(candidate: {
 
 export async function insertAgendaToSupabase(item: AgendaItem): Promise<AgendaItem> {
   const client = assertClient();
-  const payload = mapAgendaToDbPayload(item);
+  const payload = mapAgendaToDbPayload(item, true);
   const { data, error } = await client
     .from('agenda')
     .insert(payload)
     .select(AGENDA_SELECT_COLUMNS)
     .single();
+
+  if (error && isMissingColumnError(error)) {
+    const fallbackPayload = mapAgendaToDbPayload(item, false);
+    const fallback = await client
+      .from('agenda')
+      .insert(fallbackPayload)
+      .select(AGENDA_BASE_SELECT_COLUMNS)
+      .single();
+    if (fallback.error) {
+      throw new Error(formatSupabaseError(fallback.error));
+    }
+    return {
+      ...mapAgendaRowFromDb(fallback.data as Record<string, unknown>),
+      noWaAtasan: item.noWaAtasan?.trim() || '',
+      sudahDiingatkan: Boolean(item.sudahDiingatkan),
+    };
+  }
 
   if (error) {
     throw new Error(formatSupabaseError(error));
@@ -274,7 +334,7 @@ export async function updateAgendaInSupabase(
   baseItem?: AgendaItem
 ): Promise<AgendaItem> {
   const client = assertClient();
-  const payload = mapAgendaPatchToDbPayload(patch, baseItem);
+  const payload = mapAgendaPatchToDbPayload(patch, baseItem, true);
 
   if (Object.keys(payload).length === 0) {
     if (baseItem) {
@@ -295,6 +355,28 @@ export async function updateAgendaInSupabase(
     .eq('id', id)
     .select(AGENDA_SELECT_COLUMNS)
     .single();
+
+  if (error && isMissingColumnError(error)) {
+    const fallbackPayload = mapAgendaPatchToDbPayload(patch, baseItem, false);
+    if (Object.keys(fallbackPayload).length === 0) {
+      throw new Error(
+        'Kolom no_wa_atasan / sudah_diingatkan belum dibuat di tabel agenda Supabase.'
+      );
+    }
+    const fallback = await client
+      .from('agenda')
+      .update(fallbackPayload)
+      .eq('id', id)
+      .select(AGENDA_BASE_SELECT_COLUMNS)
+      .single();
+    if (fallback.error) {
+      throw new Error(formatSupabaseError(fallback.error));
+    }
+    return {
+      ...mapAgendaRowFromDb(fallback.data as Record<string, unknown>),
+      ...patch,
+    };
+  }
 
   if (error) {
     throw new Error(formatSupabaseError(error));
@@ -324,11 +406,19 @@ export async function syncImportedAgendasToSupabase(
   const client = assertClient();
 
   const upsertWithUuidFallback = async (rowsToUpsert: AgendaItem[]) => {
-    const payloads = rowsToUpsert.map(mapAgendaToDbPayload);
+    const payloads = rowsToUpsert.map((r) => mapAgendaToDbPayload(r, true));
     const { error } = await client.from('agenda').upsert(payloads, { onConflict: 'id' });
+    if (error && isMissingColumnError(error)) {
+      const basePayloads = rowsToUpsert.map((r) => mapAgendaToDbPayload(r, false));
+      const baseRetry = await client.from('agenda').upsert(basePayloads, { onConflict: 'id' });
+      if (baseRetry.error) {
+        throw new Error(formatSupabaseError(baseRetry.error));
+      }
+      return;
+    }
     if (error && error.code === '22P02') {
-      const uuidPayloads = normalizeAgendaIdsForUuidIfNeeded(rowsToUpsert).map(
-        mapAgendaToDbPayload
+      const uuidPayloads = normalizeAgendaIdsForUuidIfNeeded(rowsToUpsert).map((r) =>
+        mapAgendaToDbPayload(r, true)
       );
       const retry = await client.from('agenda').upsert(uuidPayloads, { onConflict: 'id' });
       if (retry.error) {

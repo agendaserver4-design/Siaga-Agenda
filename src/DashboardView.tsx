@@ -17,6 +17,7 @@ import {
   Image as ImageIcon,
   Lock,
   MapPin,
+  MessageCircle,
   Plus,
   Search,
   Trash2,
@@ -37,12 +38,14 @@ import {
   MasterUnitItem,
   RoleCode,
   addDaysISO,
+  buildAtasanReminderWhatsAppUrl,
   formatDurasi,
   formatRentangWaktu,
   formatTanggalLengkap,
   formatTanggalPendek,
   getLocalISODate,
   getPermissions,
+  isAgendaDueSoonWIB,
   timeToMinutes,
 } from './types';
 
@@ -59,6 +62,7 @@ interface DashboardViewProps {
   onOpenEditAgenda: (item: AgendaItem) => void;
   onRequestDeleteAgenda: (item: AgendaItem) => void;
   onToggleStatus: (item: AgendaItem) => void;
+  onRemindAtasan: (item: AgendaItem) => void;
   onOpenSinglePoster: (item: AgendaItem) => void;
   onOpenMasterModal: (unit?: MasterUnitItem) => void;
   onRequestDeleteMaster: (unit: MasterUnitItem) => void;
@@ -198,6 +202,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onOpenEditAgenda,
   onRequestDeleteAgenda,
   onToggleStatus,
+  onRemindAtasan,
   onOpenSinglePoster,
   onOpenMasterModal,
   onRequestDeleteMaster,
@@ -205,6 +210,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 }) => {
   const perms = useMemo(() => getPermissions(role), [role]);
   const todayISO = useMemo(() => getLocalISODate(), []);
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 30000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   // Dashboard filters (no conflict filter)
   const [searchQuery, setSearchQuery] = useState('');
@@ -992,12 +1005,23 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <div className="divide-y divide-slate-100 rounded-xl border border-slate-200 bg-white overflow-hidden">
               {filteredDayAgendas.map((item) => {
                 const catSt = getCategoryStyle(item.kategori);
+                const dueSoon = isAgendaDueSoonWIB(item, nowMs);
+                const waUrl = buildAtasanReminderWhatsAppUrl(item);
                 return (
-                  <button
+                  <div
                     key={item.id}
-                    type="button"
+                    role="button"
+                    tabIndex={0}
                     onClick={() => setDetailAgendaId(item.id)}
-                    className="w-full text-left px-3.5 py-3 hover:bg-emerald-50/45 active:bg-emerald-50 transition flex items-center justify-between gap-3 cursor-pointer"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        setDetailAgendaId(item.id);
+                      }
+                    }}
+                    className={`w-full text-left px-3.5 py-3 hover:bg-emerald-50/45 transition flex flex-col sm:flex-row sm:items-center justify-between gap-3 cursor-pointer ${
+                      dueSoon ? 'bg-orange-50/55 border-l-4 border-l-red-500' : ''
+                    }`}
                   >
                     <div className="min-w-0 flex-1 space-y-1">
                       <div className="flex flex-wrap items-center gap-1.5">
@@ -1012,6 +1036,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         >
                           {item.status}
                         </span>
+                        {dueSoon && (
+                          <span className="inline-flex items-center gap-1 rounded-md bg-gradient-to-r from-orange-600 to-red-600 text-white px-2 py-0.5 text-[10px] font-extrabold shadow-xs animate-pulse">
+                            ⏰ 1 Jam Lagi - Segera Ingatkan Atasan
+                          </span>
+                        )}
                         {item.isUpdated && (
                           <span className="inline-flex items-center rounded bg-emerald-600 text-white px-1.5 py-0.5 text-[10px] font-bold">
                             BARU
@@ -1031,11 +1060,31 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       </p>
                     </div>
 
-                    <div className="flex items-center gap-1 text-emerald-700 shrink-0">
-                      <span className="hidden sm:inline text-[11px] font-bold">Detail</span>
-                      <ChevronRight className="w-4 h-4" />
+                    <div className="flex items-center gap-2 shrink-0">
+                      <a
+                        href={waUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onRemindAtasan(item);
+                        }}
+                        className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold transition shadow-2xs ${
+                          item.sudahDiingatkan
+                            ? 'bg-emerald-50 border border-emerald-300 text-emerald-800 hover:bg-emerald-100'
+                            : 'bg-[#16A34A] hover:bg-[#15803D] text-white'
+                        }`}
+                      >
+                        <MessageCircle className="w-3.5 h-3.5" />
+                        <span>{item.sudahDiingatkan ? '✓ Sudah Diingatkan' : 'Ingatkan Atasan (WA)'}</span>
+                      </a>
+
+                      <div className="flex items-center gap-1 text-emerald-700">
+                        <span className="hidden md:inline text-[11px] font-bold">Detail</span>
+                        <ChevronRight className="w-4 h-4" />
+                      </div>
                     </div>
-                  </button>
+                  </div>
                 );
               })}
             </div>
@@ -1089,6 +1138,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   >
                     Status: {activeDetailAgenda.status}
                   </span>
+                  {isAgendaDueSoonWIB(activeDetailAgenda, nowMs) && (
+                    <span className="inline-flex items-center gap-1 rounded-md bg-gradient-to-r from-orange-600 to-red-600 text-white px-2.5 py-0.5 text-[11px] font-extrabold shadow-xs">
+                      ⏰ 1 Jam Lagi - Segera Ingatkan Atasan
+                    </span>
+                  )}
                   {activeDetailAgenda.isUpdated && (
                     <span className="inline-flex items-center rounded-md bg-emerald-600 text-white px-2 py-0.5 text-[10px] font-bold">
                       UPDATE / BARU
@@ -1130,10 +1184,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       <span>{activeDetailAgenda.pejabatPendamping || '-'}</span>
                     </p>
                   </div>
-                  <div className="rounded-xl bg-slate-50 border border-slate-100 p-3 sm:col-span-2">
+                  <div className="rounded-xl bg-slate-50 border border-slate-100 p-3">
                     <p className="text-slate-500 font-medium">Pakaian / Seragam</p>
                     <p className="font-bold text-slate-900 mt-0.5">
                       {activeDetailAgenda.pakaian || '-'}
+                    </p>
+                  </div>
+                  <div className="rounded-xl bg-slate-50 border border-slate-100 p-3">
+                    <p className="text-slate-500 font-medium">Nomor WhatsApp Atasan</p>
+                    <p className="font-bold text-slate-900 font-mono mt-0.5">
+                      {activeDetailAgenda.noWaAtasan || 'Belum diisi (pilih kontak di WA)'}
                     </p>
                   </div>
                 </div>
@@ -1163,6 +1223,24 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 )}
 
                 <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center gap-2">
+                  <a
+                    href={buildAtasanReminderWhatsAppUrl(activeDetailAgenda)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={() => onRemindAtasan(activeDetailAgenda)}
+                    className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold transition shadow-2xs ${
+                      activeDetailAgenda.sudahDiingatkan
+                        ? 'border border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100'
+                        : 'bg-[#16A34A] hover:bg-[#15803D] text-white'
+                    }`}
+                  >
+                    <MessageCircle className="w-3.5 h-3.5" />
+                    <span>
+                      {activeDetailAgenda.sudahDiingatkan
+                        ? '✓ Sudah Diingatkan'
+                        : 'Ingatkan Atasan (WA)'}
+                    </span>
+                  </a>
                   <button
                     type="button"
                     onClick={async () => {
@@ -1454,6 +1532,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2.5">
                           {activeInSlot.map((item) => {
                             const catSt = getCategoryStyle(item.kategori);
+                            const dueSoon = isAgendaDueSoonWIB(item, nowMs);
                             return (
                               <div
                                 key={`${hour}-${item.id}`}
@@ -1473,6 +1552,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                                     {item.status}
                                   </span>
                                 </div>
+                                {dueSoon && (
+                                  <div className="inline-flex items-center gap-1 rounded-md bg-gradient-to-r from-orange-600 to-red-600 text-white px-2 py-0.5 text-[10px] font-extrabold">
+                                    ⏰ 1 Jam Lagi - Segera Ingatkan Atasan
+                                  </div>
+                                )}
                                 <p className="text-xs font-extrabold text-slate-900 line-clamp-2">
                                   {item.judul}
                                 </p>
@@ -1483,6 +1567,24 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                                   👤 {item.pejabatPendamping || item.penyelenggara}
                                 </p>
                                 <div className="pt-1.5 flex flex-wrap items-center gap-1.5">
+                                  <a
+                                    href={buildAtasanReminderWhatsAppUrl(item)}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    onClick={() => onRemindAtasan(item)}
+                                    className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-bold transition ${
+                                      item.sudahDiingatkan
+                                        ? 'bg-emerald-50 border border-emerald-300 text-emerald-800'
+                                        : 'bg-[#16A34A] hover:bg-[#15803D] text-white'
+                                    }`}
+                                  >
+                                    <MessageCircle className="w-3 h-3" />
+                                    <span>
+                                      {item.sudahDiingatkan
+                                        ? '✓ Sudah Diingatkan'
+                                        : 'Ingatkan Atasan (WA)'}
+                                    </span>
+                                  </a>
                                   {perms.canEditAgenda && (
                                     <button
                                       type="button"
@@ -1671,17 +1773,25 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
                     {dayActiveAgendas.map((item) => {
                       const catSt = getCategoryStyle(item.kategori);
+                      const dueSoon = isAgendaDueSoonWIB(item, nowMs);
                       return (
                         <div
                           key={item.id}
-                          className={`rounded-xl border p-3 flex items-start justify-between gap-2 ${catSt.card}`}
+                          className={`rounded-xl border p-3 flex flex-col justify-between gap-2 ${catSt.card}`}
                         >
                           <div className="space-y-1 min-w-0">
-                            <span
-                              className={`inline-block font-mono text-[10px] font-bold px-2 py-0.5 rounded ${catSt.chip}`}
-                            >
-                              {formatRentangWaktu(item)}
-                            </span>
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <span
+                                className={`inline-block font-mono text-[10px] font-bold px-2 py-0.5 rounded ${catSt.chip}`}
+                              >
+                                {formatRentangWaktu(item)}
+                              </span>
+                              {dueSoon && (
+                                <span className="inline-flex items-center gap-1 rounded bg-gradient-to-r from-orange-600 to-red-600 text-white px-1.5 py-0.5 text-[10px] font-extrabold">
+                                  ⏰ 1 Jam Lagi - Segera Ingatkan Atasan
+                                </span>
+                              )}
+                            </div>
                             <p className="text-xs font-extrabold text-slate-900 line-clamp-2">
                               {item.judul}
                             </p>
@@ -1689,15 +1799,33 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                               📍 {item.lokasi} · 👤 {item.pejabatPendamping || item.penyelenggara}
                             </p>
                           </div>
-                          {perms.canEditAgenda && (
-                            <button
-                              type="button"
-                              onClick={() => onOpenEditAgenda(item)}
-                              className="px-2 py-1 rounded-lg bg-white border border-slate-200 text-[11px] font-bold text-slate-700 shrink-0"
+                          <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                            <a
+                              href={buildAtasanReminderWhatsAppUrl(item)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={() => onRemindAtasan(item)}
+                              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-bold transition ${
+                                item.sudahDiingatkan
+                                  ? 'bg-emerald-50 border border-emerald-300 text-emerald-800'
+                                  : 'bg-[#16A34A] hover:bg-[#15803D] text-white'
+                              }`}
                             >
-                              Edit
-                            </button>
-                          )}
+                              <MessageCircle className="w-3 h-3" />
+                              <span>
+                                {item.sudahDiingatkan ? '✓ Sudah Diingatkan' : 'Ingatkan Atasan (WA)'}
+                              </span>
+                            </a>
+                            {perms.canEditAgenda && (
+                              <button
+                                type="button"
+                                onClick={() => onOpenEditAgenda(item)}
+                                className="px-2 py-1 rounded-lg bg-white border border-slate-200 text-[11px] font-bold text-slate-700 shrink-0"
+                              >
+                                Edit
+                              </button>
+                            )}
+                          </div>
                         </div>
                       );
                     })}
@@ -2045,6 +2173,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       <td className="py-3 px-3.5">
                         <div className="font-semibold text-slate-900">{item.judul}</div>
                         <div className="text-xs text-slate-500 mt-0.5">{item.lokasi}</div>
+                        {isAgendaDueSoonWIB(item, nowMs) && (
+                          <span className="mt-1 inline-flex items-center gap-1 rounded bg-gradient-to-r from-orange-600 to-red-600 text-white px-2 py-0.5 text-[10px] font-extrabold">
+                            ⏰ 1 Jam Lagi - Segera Ingatkan Atasan
+                          </span>
+                        )}
                       </td>
                       <td className="py-3 px-3.5 text-xs">
                         <div className="font-semibold text-slate-800">{item.penyelenggara}</div>
@@ -2060,6 +2193,22 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         </span>
                       </td>
                       <td className="py-3 px-3.5 text-right whitespace-nowrap space-x-1">
+                        <a
+                          href={buildAtasanReminderWhatsAppUrl(item)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={() => onRemindAtasan(item)}
+                          className={`inline-flex items-center gap-1 px-2.5 py-1 rounded text-xs font-bold transition ${
+                            item.sudahDiingatkan
+                              ? 'bg-emerald-50 border border-emerald-300 text-emerald-800'
+                              : 'bg-[#16A34A] hover:bg-[#15803D] text-white'
+                          }`}
+                        >
+                          <MessageCircle className="w-3 h-3" />
+                          <span>
+                            {item.sudahDiingatkan ? '✓ Sudah Diingatkan' : 'Ingatkan Atasan (WA)'}
+                          </span>
+                        </a>
                         {perms.canEditAgenda && (
                           <button
                             type="button"
