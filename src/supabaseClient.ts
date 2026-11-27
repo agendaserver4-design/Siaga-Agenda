@@ -5,11 +5,15 @@ import {
   AgendaStatus,
   CATEGORIES,
   ConflictInfo,
-  DISPOSISI_STATUSES,
-  DisposisiStatus,
   POSTER_ILLUSTRATION_OPTIONS,
   PosterIllustrationKey,
+  ROLE_META,
+  RoleCode,
+  UserAccount,
+  formatRentangWaktu,
   getConflictsForCandidate,
+  minutesToTime,
+  timeToMinutes,
 } from './types';
 
 const rawSupabaseUrl = (import.meta.env.VITE_SUPABASE_URL as string | undefined)?.trim() || '';
@@ -65,97 +69,48 @@ export function sanitizeZoomUrl(raw?: string | null): string | undefined {
 const VALID_STATUSES: AgendaStatus[] = ['Terjadwal', 'Draft', 'Selesai', 'Dibatalkan'];
 const VALID_ILLUSTRATIONS = new Set(POSTER_ILLUSTRATION_OPTIONS.map((o) => o.value));
 
-function normalizeTimeValue(raw: unknown, fallback: string): string {
-  const str = String(raw || '').trim();
-  const match = str.match(/^(\d{2}:\d{2})/);
-  return match ? match[1] : fallback;
+function normalizeTimeToken(raw: string, fallback: string): string {
+  const normalized = raw.trim().replace('.', ':');
+  const match = normalized.match(/^(\d{1,2}):(\d{2})/);
+  if (!match) return fallback;
+  const hh = match[1].padStart(2, '0');
+  const mm = match[2];
+  return `${hh}:${mm}`;
 }
 
-export function mapAgendaRowFromDb(row: Record<string, unknown>): AgendaItem {
-  const rawCategory = String(row.kategori || 'Rapat Internal') as AgendaCategory;
-  const rawStatus = String(row.status || 'Terjadwal') as AgendaStatus;
-  const rawDisposisi = String(
-    row.status_disposisi ?? row.statusDisposisi ?? 'Menunggu Disposisi'
-  ) as DisposisiStatus;
-  const rawIlustrasi = String(row.ilustrasi || 'auto') as PosterIllustrationKey;
+export function parseWaktuRange(rawWaktu: unknown): {
+  jamMulai: string;
+  jamSelesai: string;
+  sampaiSelesai: boolean;
+} {
+  const text = String(rawWaktu || '').trim();
+  if (!text) {
+    return { jamMulai: '09:00', jamSelesai: '11:00', sampaiSelesai: false };
+  }
+
+  const timeMatches = text.match(/\d{1,2}[:.]\d{2}/g) || [];
+  const jamMulai = timeMatches[0] ? normalizeTimeToken(timeMatches[0], '09:00') : '09:00';
+  const isSelesai = /selesai/i.test(text);
+
+  if (isSelesai) {
+    const estimatedEnd = minutesToTime(timeToMinutes(jamMulai) + 120);
+    return { jamMulai, jamSelesai: estimatedEnd, sampaiSelesai: true };
+  }
+
+  if (timeMatches.length >= 2) {
+    const jamSelesai = normalizeTimeToken(timeMatches[1], '11:00');
+    const safeEnd =
+      timeToMinutes(jamSelesai) > timeToMinutes(jamMulai)
+        ? jamSelesai
+        : minutesToTime(timeToMinutes(jamMulai) + 120);
+    return { jamMulai, jamSelesai: safeEnd, sampaiSelesai: false };
+  }
 
   return {
-    id: String(row.id || generateAgendaUuid()),
-    judul: String(row.judul || 'Agenda Tanpa Judul'),
-    tanggal: String(row.tanggal || '').slice(0, 10),
-    jamMulai: normalizeTimeValue(row.jam_mulai ?? row.jamMulai, '09:00'),
-    jamSelesai: normalizeTimeValue(row.jam_selesai ?? row.jamSelesai, '11:00'),
-    sampaiSelesai: Boolean(row.sampai_selesai ?? row.sampaiSelesai),
-    lokasi: String(row.lokasi || 'Menunggu konfirmasi'),
-    penyelenggara: String(row.penyelenggara || 'Sekretariat BPBD'),
-    pakaian: String(row.pakaian || 'Menyesuaikan'),
-    nomorSurat: String(row.nomor_surat ?? row.nomorSurat ?? ''),
-    kategori: CATEGORIES.includes(rawCategory) ? rawCategory : 'Rapat Internal',
-    status: VALID_STATUSES.includes(rawStatus) ? rawStatus : 'Terjadwal',
-    statusDisposisi: DISPOSISI_STATUSES.includes(rawDisposisi)
-      ? rawDisposisi
-      : 'Menunggu Disposisi',
-    pejabatPendamping: String(row.pejabat_pendamping ?? row.pejabatPendamping ?? ''),
-    isConfidential: Boolean(row.is_confidential ?? row.isConfidential),
-    isUpdated: Boolean(row.is_updated ?? row.isUpdated),
-    zoomUrl: sanitizeZoomUrl((row.zoom_url ?? row.zoomUrl) as string | undefined),
-    ilustrasi: VALID_ILLUSTRATIONS.has(rawIlustrasi) ? rawIlustrasi : 'auto',
-    catatan: String(row.catatan || ''),
-    sumber: row.sumber === 'e-Buddy' ? 'e-Buddy' : 'Manual',
-    createdBy: String(row.created_by ?? row.createdBy ?? 'Operator'),
-    createdAt: String(row.created_at ?? row.createdAt ?? new Date().toISOString()),
+    jamMulai,
+    jamSelesai: minutesToTime(timeToMinutes(jamMulai) + 120),
+    sampaiSelesai: false,
   };
-}
-
-export function mapAgendaToDbPayload(item: AgendaItem) {
-  return {
-    id: item.id,
-    judul: item.judul,
-    tanggal: item.tanggal,
-    jam_mulai: item.jamMulai,
-    jam_selesai: item.jamSelesai,
-    sampai_selesai: Boolean(item.sampaiSelesai),
-    lokasi: item.lokasi,
-    penyelenggara: item.penyelenggara,
-    pakaian: item.pakaian,
-    nomor_surat: item.nomorSurat,
-    kategori: item.kategori,
-    status: item.status,
-    status_disposisi: item.statusDisposisi,
-    pejabat_pendamping: item.pejabatPendamping,
-    is_confidential: Boolean(item.isConfidential),
-    is_updated: Boolean(item.isUpdated),
-    zoom_url: sanitizeZoomUrl(item.zoomUrl) || null,
-    ilustrasi: item.ilustrasi || 'auto',
-    catatan: item.catatan,
-    sumber: item.sumber,
-    created_by: item.createdBy,
-    created_at: item.createdAt,
-  };
-}
-
-function mapAgendaPatchToDbPayload(patch: Partial<AgendaItem>): Record<string, unknown> {
-  const payload: Record<string, unknown> = {};
-  if (patch.judul !== undefined) payload.judul = patch.judul;
-  if (patch.tanggal !== undefined) payload.tanggal = patch.tanggal;
-  if (patch.jamMulai !== undefined) payload.jam_mulai = patch.jamMulai;
-  if (patch.jamSelesai !== undefined) payload.jam_selesai = patch.jamSelesai;
-  if (patch.sampaiSelesai !== undefined) payload.sampai_selesai = Boolean(patch.sampaiSelesai);
-  if (patch.lokasi !== undefined) payload.lokasi = patch.lokasi;
-  if (patch.penyelenggara !== undefined) payload.penyelenggara = patch.penyelenggara;
-  if (patch.pakaian !== undefined) payload.pakaian = patch.pakaian;
-  if (patch.nomorSurat !== undefined) payload.nomor_surat = patch.nomorSurat;
-  if (patch.kategori !== undefined) payload.kategori = patch.kategori;
-  if (patch.status !== undefined) payload.status = patch.status;
-  if (patch.statusDisposisi !== undefined) payload.status_disposisi = patch.statusDisposisi;
-  if (patch.pejabatPendamping !== undefined) payload.pejabat_pendamping = patch.pejabatPendamping;
-  if (patch.isConfidential !== undefined) payload.is_confidential = Boolean(patch.isConfidential);
-  if (patch.isUpdated !== undefined) payload.is_updated = Boolean(patch.isUpdated);
-  if (patch.zoomUrl !== undefined) payload.zoom_url = sanitizeZoomUrl(patch.zoomUrl) || null;
-  if (patch.ilustrasi !== undefined) payload.ilustrasi = patch.ilustrasi || 'auto';
-  if (patch.catatan !== undefined) payload.catatan = patch.catatan;
-  if (patch.sumber !== undefined) payload.sumber = patch.sumber;
-  return payload;
 }
 
 function formatSupabaseError(err: unknown): string {
@@ -174,13 +129,100 @@ function assertClient(): SupabaseClient {
   return supabase;
 }
 
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+// =========================================================================
+// TABEL `agenda` (id, judul, tanggal, waktu, tempat, bidang_pic, status)
+// =========================================================================
+const AGENDA_SELECT_COLUMNS = 'id, judul, tanggal, waktu, tempat, bidang_pic, status';
+
+export function mapAgendaRowFromDb(row: Record<string, unknown>): AgendaItem {
+  const parsedWaktu = parseWaktuRange(row.waktu);
+  const rawStatus = String(row.status || 'Terjadwal') as AgendaStatus;
+  const rawCategory = String(row.kategori || 'Rapat Internal') as AgendaCategory;
+  const rawIlustrasi = String(row.ilustrasi || 'auto') as PosterIllustrationKey;
+  const bidangPic = String(row.bidang_pic ?? row.pejabat_pendamping ?? row.penyelenggara ?? 'Sekretariat BPBD').trim();
+
+  return {
+    id: String(row.id || generateAgendaUuid()),
+    judul: String(row.judul || 'Agenda Tanpa Judul'),
+    tanggal: String(row.tanggal || '').slice(0, 10),
+    jamMulai: row.jam_mulai ? normalizeTimeToken(String(row.jam_mulai), parsedWaktu.jamMulai) : parsedWaktu.jamMulai,
+    jamSelesai: row.jam_selesai ? normalizeTimeToken(String(row.jam_selesai), parsedWaktu.jamSelesai) : parsedWaktu.jamSelesai,
+    sampaiSelesai:
+      typeof row.sampai_selesai === 'boolean' ? row.sampai_selesai : parsedWaktu.sampaiSelesai,
+    lokasi: String(row.tempat ?? row.lokasi ?? 'Menunggu konfirmasi'),
+    penyelenggara: bidangPic || 'Sekretariat BPBD',
+    pakaian: String(row.pakaian || 'Menyesuaikan'),
+    nomorSurat: String(row.nomor_surat ?? ''),
+    kategori: CATEGORIES.includes(rawCategory) ? rawCategory : 'Rapat Internal',
+    status: VALID_STATUSES.includes(rawStatus) ? rawStatus : 'Terjadwal',
+    statusDisposisi: 'Menunggu Disposisi',
+    pejabatPendamping: bidangPic,
+    isConfidential: Boolean(row.is_confidential ?? false),
+    isUpdated: Boolean(row.is_updated ?? false),
+    zoomUrl: sanitizeZoomUrl((row.zoom_url ?? row.zoomUrl) as string | undefined),
+    ilustrasi: VALID_ILLUSTRATIONS.has(rawIlustrasi) ? rawIlustrasi : 'auto',
+    catatan: String(row.catatan || ''),
+    sumber: row.sumber === 'e-Buddy' ? 'e-Buddy' : 'Manual',
+    createdBy: String(row.created_by ?? 'Operator'),
+    createdAt: String(row.created_at ?? new Date().toISOString()),
+  };
+}
+
+export function mapAgendaToDbPayload(item: AgendaItem) {
+  return {
+    id: item.id,
+    judul: item.judul,
+    tanggal: item.tanggal,
+    waktu: formatRentangWaktu(item),
+    tempat: item.lokasi || 'Menunggu konfirmasi',
+    bidang_pic: (item.pejabatPendamping || item.penyelenggara || 'Sekretariat BPBD').trim(),
+    status: item.status,
+  };
+}
+
+function mapAgendaPatchToDbPayload(
+  patch: Partial<AgendaItem>,
+  baseItem?: AgendaItem
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = {};
+  if (patch.judul !== undefined) payload.judul = patch.judul;
+  if (patch.tanggal !== undefined) payload.tanggal = patch.tanggal;
+  if (
+    patch.jamMulai !== undefined ||
+    patch.jamSelesai !== undefined ||
+    patch.sampaiSelesai !== undefined
+  ) {
+    const jamMulai = patch.jamMulai ?? baseItem?.jamMulai ?? '09:00';
+    const jamSelesai = patch.jamSelesai ?? baseItem?.jamSelesai ?? '11:00';
+    const sampaiSelesai = patch.sampaiSelesai ?? baseItem?.sampaiSelesai ?? false;
+    payload.waktu = formatRentangWaktu({ jamMulai, jamSelesai, sampaiSelesai });
+  }
+  if (patch.lokasi !== undefined) {
+    payload.tempat = patch.lokasi || 'Menunggu konfirmasi';
+  }
+  if (patch.pejabatPendamping !== undefined || patch.penyelenggara !== undefined) {
+    const pic = (
+      patch.pejabatPendamping ??
+      baseItem?.pejabatPendamping ??
+      patch.penyelenggara ??
+      baseItem?.penyelenggara ??
+      'Sekretariat BPBD'
+    ).trim();
+    payload.bidang_pic = pic || 'Sekretariat BPBD';
+  }
+  if (patch.status !== undefined) payload.status = patch.status;
+  return payload;
+}
+
 export async function fetchAgendasFromSupabase(): Promise<AgendaItem[]> {
   const client = assertClient();
   const { data, error } = await client
-    .from('agendas')
-    .select('*')
+    .from('agenda')
+    .select(AGENDA_SELECT_COLUMNS)
     .order('tanggal', { ascending: true })
-    .order('jam_mulai', { ascending: true });
+    .order('waktu', { ascending: true });
 
   if (error) {
     throw new Error(formatSupabaseError(error));
@@ -198,8 +240,8 @@ export async function fetchConflictsFromSupabase(candidate: {
   if (candidate.status === 'Dibatalkan' || candidate.status === 'Draft') return [];
   const client = assertClient();
   const { data, error } = await client
-    .from('agendas')
-    .select('*')
+    .from('agenda')
+    .select(AGENDA_SELECT_COLUMNS)
     .eq('tanggal', candidate.tanggal)
     .neq('status', 'Dibatalkan')
     .neq('status', 'Draft');
@@ -214,7 +256,11 @@ export async function fetchConflictsFromSupabase(candidate: {
 export async function insertAgendaToSupabase(item: AgendaItem): Promise<AgendaItem> {
   const client = assertClient();
   const payload = mapAgendaToDbPayload(item);
-  const { data, error } = await client.from('agendas').insert(payload).select('*').single();
+  const { data, error } = await client
+    .from('agenda')
+    .insert(payload)
+    .select(AGENDA_SELECT_COLUMNS)
+    .single();
 
   if (error) {
     throw new Error(formatSupabaseError(error));
@@ -224,15 +270,30 @@ export async function insertAgendaToSupabase(item: AgendaItem): Promise<AgendaIt
 
 export async function updateAgendaInSupabase(
   id: string,
-  patch: Partial<AgendaItem>
+  patch: Partial<AgendaItem>,
+  baseItem?: AgendaItem
 ): Promise<AgendaItem> {
   const client = assertClient();
-  const payload = mapAgendaPatchToDbPayload(patch);
+  const payload = mapAgendaPatchToDbPayload(patch, baseItem);
+
+  if (Object.keys(payload).length === 0) {
+    if (baseItem) {
+      return { ...baseItem, ...patch };
+    }
+    const { data, error } = await client
+      .from('agenda')
+      .select(AGENDA_SELECT_COLUMNS)
+      .eq('id', id)
+      .single();
+    if (error) throw new Error(formatSupabaseError(error));
+    return { ...mapAgendaRowFromDb(data as Record<string, unknown>), ...patch };
+  }
+
   const { data, error } = await client
-    .from('agendas')
+    .from('agenda')
     .update(payload)
     .eq('id', id)
-    .select('*')
+    .select(AGENDA_SELECT_COLUMNS)
     .single();
 
   if (error) {
@@ -243,17 +304,16 @@ export async function updateAgendaInSupabase(
 
 export async function deleteAgendaFromSupabase(id: string): Promise<void> {
   const client = assertClient();
-  const { error } = await client.from('agendas').delete().eq('id', id);
+  const { error } = await client.from('agenda').delete().eq('id', id);
   if (error) {
     throw new Error(formatSupabaseError(error));
   }
 }
 
-function normalizeIdsForUuidIfNeeded(items: AgendaItem[]): AgendaItem[] {
-  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+function normalizeAgendaIdsForUuidIfNeeded(items: AgendaItem[]): AgendaItem[] {
   return items.map((item) => ({
     ...item,
-    id: uuidRegex.test(item.id) ? item.id : generateAgendaUuid(),
+    id: UUID_REGEX.test(item.id) ? item.id : generateAgendaUuid(),
   }));
 }
 
@@ -265,10 +325,12 @@ export async function syncImportedAgendasToSupabase(
 
   const upsertWithUuidFallback = async (rowsToUpsert: AgendaItem[]) => {
     const payloads = rowsToUpsert.map(mapAgendaToDbPayload);
-    const { error } = await client.from('agendas').upsert(payloads, { onConflict: 'id' });
+    const { error } = await client.from('agenda').upsert(payloads, { onConflict: 'id' });
     if (error && error.code === '22P02') {
-      const uuidPayloads = normalizeIdsForUuidIfNeeded(rowsToUpsert).map(mapAgendaToDbPayload);
-      const retry = await client.from('agendas').upsert(uuidPayloads, { onConflict: 'id' });
+      const uuidPayloads = normalizeAgendaIdsForUuidIfNeeded(rowsToUpsert).map(
+        mapAgendaToDbPayload
+      );
+      const retry = await client.from('agenda').upsert(uuidPayloads, { onConflict: 'id' });
       if (retry.error) {
         throw new Error(formatSupabaseError(retry.error));
       }
@@ -283,7 +345,7 @@ export async function syncImportedAgendasToSupabase(
     const existing = await fetchAgendasFromSupabase();
     if (existing.length > 0) {
       const existingIds = existing.map((a) => a.id);
-      const { error: delError } = await client.from('agendas').delete().in('id', existingIds);
+      const { error: delError } = await client.from('agenda').delete().in('id', existingIds);
       if (delError) {
         throw new Error(formatSupabaseError(delError));
       }
@@ -310,8 +372,236 @@ export async function syncImportedAgendasToSupabase(
 export function subscribeAgendasRealtime(onChange: () => void): () => void {
   if (!supabase) return () => {};
   const channel = supabase
-    .channel('agendas-realtime-sync')
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'agendas' }, () => {
+    .channel('agenda-realtime-sync')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'agenda' }, () => {
+      onChange();
+    })
+    .subscribe();
+
+  return () => {
+    supabase.removeChannel(channel);
+  };
+}
+
+// =========================================================================
+// TABEL `akun_asn` (id, nama, nip, jabatan, unit_kerja, username, role, status)
+// =========================================================================
+const AKUN_ASN_SELECT_COLUMNS = 'id, nama, nip, jabatan, unit_kerja, username, role, status';
+
+export function normalizeRoleCode(raw: unknown): RoleCode {
+  const val = String(raw || '').trim().toLowerCase();
+  if (
+    val === 'role_super_admin' ||
+    val === 'super admin' ||
+    val === 'super_admin' ||
+    val === 'superadmin' ||
+    val === 'admin'
+  ) {
+    return 'ROLE_SUPER_ADMIN';
+  }
+  if (
+    val === 'role_disposisi' ||
+    val === 'pejabat disposisi' ||
+    val === 'disposisi' ||
+    val === 'sekretaris'
+  ) {
+    return 'ROLE_DISPOSISI';
+  }
+  if (val === 'role_pimpinan' || val === 'pimpinan' || val === 'kalaksa' || val === 'viewer') {
+    return 'ROLE_PIMPINAN';
+  }
+  return 'ROLE_OPERATOR';
+}
+
+function statusToIsActive(raw: unknown): boolean {
+  if (typeof raw === 'boolean') return raw;
+  const val = String(raw ?? 'Aktif').trim().toLowerCase();
+  if (val === 'nonaktif' || val === 'non-aktif' || val === 'inactive' || val === 'false' || val === '0') {
+    return false;
+  }
+  return true;
+}
+
+export function mapUserRowFromDb(row: Record<string, unknown>): UserAccount {
+  return {
+    id: String(row.id || generateAgendaUuid()),
+    namaLengkap: String(row.nama ?? row.namaLengkap ?? ''),
+    nip: String(row.nip ?? ''),
+    jabatan: String(row.jabatan ?? ''),
+    bidang: String(row.unit_kerja ?? row.bidang ?? 'Sekretariat BPBD'),
+    username: String(row.username ?? ''),
+    email: '',
+    roleKode: normalizeRoleCode(row.role ?? row.roleKode),
+    isActive: statusToIsActive(row.status ?? row.isActive),
+  };
+}
+
+export function mapUserToDbPayload(user: UserAccount) {
+  return {
+    id: user.id,
+    nama: user.namaLengkap.trim(),
+    nip: user.nip.trim(),
+    jabatan: user.jabatan.trim(),
+    unit_kerja: (user.bidang || 'Sekretariat BPBD').trim(),
+    username: user.username.trim(),
+    role: ROLE_META[user.roleKode].shortLabel,
+    status: user.isActive ? 'Aktif' : 'Nonaktif',
+  };
+}
+
+export async function fetchUsersFromSupabase(): Promise<UserAccount[]> {
+  const client = assertClient();
+  const { data, error } = await client
+    .from('akun_asn')
+    .select(AKUN_ASN_SELECT_COLUMNS)
+    .order('nama', { ascending: true });
+
+  if (error) {
+    throw new Error(formatSupabaseError(error));
+  }
+  return (data || []).map((row) => mapUserRowFromDb(row as Record<string, unknown>));
+}
+
+export async function insertUserToSupabase(user: UserAccount): Promise<UserAccount> {
+  const client = assertClient();
+  const payload = mapUserToDbPayload({
+    ...user,
+    id: user.id || generateAgendaUuid(),
+  });
+  const { data, error } = await client
+    .from('akun_asn')
+    .insert(payload)
+    .select(AKUN_ASN_SELECT_COLUMNS)
+    .single();
+
+  if (error && error.code === '22P02') {
+    const retryPayload = { ...payload, id: generateAgendaUuid() };
+    const retry = await client
+      .from('akun_asn')
+      .insert(retryPayload)
+      .select(AKUN_ASN_SELECT_COLUMNS)
+      .single();
+    if (retry.error) {
+      throw new Error(formatSupabaseError(retry.error));
+    }
+    return mapUserRowFromDb(retry.data as Record<string, unknown>);
+  }
+
+  if (error) {
+    throw new Error(formatSupabaseError(error));
+  }
+  return mapUserRowFromDb(data as Record<string, unknown>);
+}
+
+export async function updateUserInSupabase(id: string, user: UserAccount): Promise<UserAccount> {
+  const client = assertClient();
+  const fullPayload = mapUserToDbPayload({ ...user, id });
+  const { id: _ignoreId, ...updateFields } = fullPayload;
+
+  const { data, error } = await client
+    .from('akun_asn')
+    .update(updateFields)
+    .eq('id', id)
+    .select(AKUN_ASN_SELECT_COLUMNS)
+    .single();
+
+  if (error) {
+    throw new Error(formatSupabaseError(error));
+  }
+  return mapUserRowFromDb(data as Record<string, unknown>);
+}
+
+export async function toggleUserStatusInSupabase(
+  id: string,
+  nextActive: boolean
+): Promise<UserAccount> {
+  const client = assertClient();
+  const { data, error } = await client
+    .from('akun_asn')
+    .update({ status: nextActive ? 'Aktif' : 'Nonaktif' })
+    .eq('id', id)
+    .select(AKUN_ASN_SELECT_COLUMNS)
+    .single();
+
+  if (error) {
+    throw new Error(formatSupabaseError(error));
+  }
+  return mapUserRowFromDb(data as Record<string, unknown>);
+}
+
+export async function deleteUserFromSupabase(id: string): Promise<void> {
+  const client = assertClient();
+  const { error } = await client.from('akun_asn').delete().eq('id', id);
+  if (error) {
+    throw new Error(formatSupabaseError(error));
+  }
+}
+
+function normalizeUserIdsForUuidIfNeeded(users: UserAccount[]): UserAccount[] {
+  return users.map((u) => ({
+    ...u,
+    id: UUID_REGEX.test(u.id) ? u.id : generateAgendaUuid(),
+  }));
+}
+
+export async function syncImportedUsersToSupabase(
+  usersToSync: UserAccount[],
+  mode: 'merge' | 'replace'
+): Promise<UserAccount[]> {
+  const client = assertClient();
+
+  const upsertWithUuidFallback = async (rowsToUpsert: UserAccount[]) => {
+    const payloads = rowsToUpsert.map(mapUserToDbPayload);
+    const { error } = await client.from('akun_asn').upsert(payloads, { onConflict: 'id' });
+    if (error && error.code === '22P02') {
+      const uuidPayloads = normalizeUserIdsForUuidIfNeeded(rowsToUpsert).map(mapUserToDbPayload);
+      const retry = await client.from('akun_asn').upsert(uuidPayloads, { onConflict: 'id' });
+      if (retry.error) {
+        throw new Error(formatSupabaseError(retry.error));
+      }
+      return;
+    }
+    if (error) {
+      throw new Error(formatSupabaseError(error));
+    }
+  };
+
+  if (mode === 'replace') {
+    const existing = await fetchUsersFromSupabase();
+    if (existing.length > 0) {
+      const existingIds = existing.map((u) => u.id);
+      const { error: delError } = await client.from('akun_asn').delete().in('id', existingIds);
+      if (delError) {
+        throw new Error(formatSupabaseError(delError));
+      }
+    }
+    if (usersToSync.length > 0) {
+      await upsertWithUuidFallback(usersToSync);
+    }
+    return await fetchUsersFromSupabase();
+  }
+
+  const existing = await fetchUsersFromSupabase();
+  const existingKeys = new Set(
+    existing.flatMap((u) => [u.id, u.username.toLowerCase(), u.nip.toLowerCase()].filter(Boolean))
+  );
+  const newUsers = usersToSync.filter(
+    (u) =>
+      !existingKeys.has(u.id) &&
+      !existingKeys.has(u.username.toLowerCase()) &&
+      !existingKeys.has(u.nip.toLowerCase())
+  );
+  if (newUsers.length > 0) {
+    await upsertWithUuidFallback(newUsers);
+  }
+  return await fetchUsersFromSupabase();
+}
+
+export function subscribeUsersRealtime(onChange: () => void): () => void {
+  if (!supabase) return () => {};
+  const channel = supabase
+    .channel('akun-asn-realtime-sync')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'akun_asn' }, () => {
       onChange();
     })
     .subscribe();

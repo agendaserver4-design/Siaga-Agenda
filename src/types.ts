@@ -50,7 +50,7 @@ export interface UserAccount {
   nip: string;
   username: string;
   email: string;
-  password: string;
+  password?: string;
   namaLengkap: string;
   jabatan: string;
   bidang: string;
@@ -131,8 +131,6 @@ export interface ExtractedEBuddyResult {
   detectedFields: string[];
 }
 
-export const STORAGE_KEY = 'siaga_bpbd_agendas_v3';
-export const USERS_STORAGE_KEY = 'siaga_bpbd_users_v3';
 export const AUDIT_STORAGE_KEY = 'siaga_bpbd_audit_v3';
 export const MASTER_STORAGE_KEY = 'siaga_bpbd_master_v3';
 export const SESSION_LOCAL_KEY = 'siaga_bpbd_session_local_v3';
@@ -210,59 +208,6 @@ export const BULAN_ID = [
   'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
   'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember',
 ];
-
-export function createInitialUsers(): UserAccount[] {
-  return [
-    {
-      id: 'usr-1',
-      nip: '199004122015031002',
-      username: 'admin.siaga',
-      email: 'admin.siaga@sidoarjokab.go.id',
-      password: 'Bpbd2026!',
-      namaLengkap: 'Rizky Pratama, S.Kom',
-      jabatan: 'Pranata Komputer Ahli Pertama',
-      bidang: 'Sekretariat BPBD',
-      roleKode: 'ROLE_SUPER_ADMIN',
-      isActive: true,
-    },
-    {
-      id: 'usr-2',
-      nip: '199408212019032005',
-      username: 'operator.sekretariat',
-      email: 'sekretariat@sidoarjokab.go.id',
-      password: 'Bpbd2026!',
-      namaLengkap: 'Siti Aminah, A.Md',
-      jabatan: 'Pengadministrasi Umum',
-      bidang: 'Subbag Umpeg',
-      roleKode: 'ROLE_OPERATOR',
-      isActive: true,
-    },
-    {
-      id: 'usr-3',
-      nip: '197805152005011008',
-      username: 'sekretaris.bpbd',
-      email: 'sekretaris.bpbd@sidoarjokab.go.id',
-      password: 'Bpbd2026!',
-      namaLengkap: 'H. Agus Salim, S.Sos, M.Si',
-      jabatan: 'Sekretaris BPBD',
-      bidang: 'Sekretariat BPBD',
-      roleKode: 'ROLE_DISPOSISI',
-      isActive: true,
-    },
-    {
-      id: 'usr-4',
-      nip: '197211031998031004',
-      username: 'kalaksa.bpbd',
-      email: 'kalaksa.bpbd@sidoarjokab.go.id',
-      password: 'Bpbd2026!',
-      namaLengkap: 'Ir. Dwijo Prawito, M.T',
-      jabatan: 'Kepala Pelaksana BPBD',
-      bidang: 'Pimpinan',
-      roleKode: 'ROLE_PIMPINAN',
-      isActive: true,
-    },
-  ];
-}
 
 export function createInitialMasterUnits(): MasterUnitItem[] {
   return [
@@ -578,183 +523,6 @@ export function extractEBuddyText(rawText: string, defaultDate: string): Extract
     catatan: extraNotes.join(' · '),
     detectedFields,
   };
-}
-
-export function createInitialAgendas(): AgendaItem[] {
-  const today = getLocalISODate();
-  const tomorrow = addDaysISO(today, 1);
-  const plus2 = addDaysISO(today, 2);
-  const minus1 = addDaysISO(today, -1);
-  const minus2 = addDaysISO(today, -2);
-
-  return [
-    {
-      id: 'ag-1',
-      judul: 'Kunjungan Edukasi Pemadam Kebakaran RA Muslimat 10 Hasanuddin',
-      tanggal: today,
-      jamMulai: '08:00',
-      jamSelesai: '10:00',
-      sampaiSelesai: true,
-      lokasi: 'Pos Pemadam Kebakaran Unit Buduran',
-      penyelenggara: 'Bidang Damkarmat',
-      pakaian: 'Seragam PDL Damkar',
-      nomorSurat: '360/1420/438.5.17/2026',
-      kategori: 'Kunjungan / Dinas',
-      status: 'Terjadwal',
-      statusDisposisi: 'Disetujui Pimpinan',
-      pejabatPendamping: 'Bid. Damkarmat',
-      isConfidential: false,
-      isUpdated: false,
-      catatan: 'Simulasi pemadaman ringan dan pengenalan alat SAR.',
-      sumber: 'e-Buddy',
-      createdBy: 'Siti Aminah, A.Md',
-      createdAt: new Date().toISOString(),
-    },
-    {
-      id: 'ag-2',
-      judul: 'Pelatihan K3 Kebakaran Kelas DC & Koordinasi Hidrometeorologi',
-      tanggal: today,
-      jamMulai: '08:00',
-      jamSelesai: '10:30',
-      lokasi: 'Daring (Zoom Meeting)',
-      penyelenggara: 'BPBD Provinsi Jawa Timur',
-      pakaian: 'PDH Khaki',
-      nomorSurat: '360/891/BPBD-JATIM/2026',
-      kategori: 'Rapat Eksternal',
-      status: 'Terjadwal',
-      statusDisposisi: 'Diwakilkan',
-      pejabatPendamping: 'Sdr. Shofyan Pandu Maulana',
-      isConfidential: false,
-      isUpdated: true,
-      zoomUrl: 'https://zoom.us/j/84299102211',
-      catatan: 'Meeting ID: 842 9910 2211 · Passcode: SIAGA26',
-      sumber: 'e-Buddy',
-      createdBy: 'Siti Aminah, A.Md',
-      createdAt: new Date().toISOString(),
-    },
-    {
-      id: 'ag-3',
-      judul: 'Sosialisasi Keamanan & Kesiapsiagaan Bencana Daerah Kab. Sidoarjo',
-      tanggal: today,
-      jamMulai: '09:00',
-      jamSelesai: '11:30',
-      lokasi: 'Pendopo Delta Wibawa Kab. Sidoarjo',
-      penyelenggara: 'Sekretariat BPBD',
-      pakaian: 'Batik Lengan Panjang',
-      nomorSurat: '360/312/SETDA/2026',
-      kategori: 'Undangan Resmi',
-      status: 'Terjadwal',
-      statusDisposisi: 'Hadir Dikonfirmasi',
-      pejabatPendamping: 'Kasubbag Umpeg',
-      isConfidential: true,
-      isUpdated: false,
-      catatan: 'Agenda sifat terbatas — laporan kesiapan anggaran BTT.',
-      sumber: 'e-Buddy',
-      createdBy: 'H. Agus Salim, S.Sos, M.Si',
-      createdAt: new Date().toISOString(),
-    },
-    {
-      id: 'ag-4',
-      judul: 'Pelatihan & Simulasi Penanganan Kebakaran dan Bencana Terpadu',
-      tanggal: today,
-      jamMulai: '13:00',
-      jamSelesai: '15:30',
-      lokasi: 'Ruang Pertemuan Puskesmas Medaeng Lt. 2, Waru',
-      penyelenggara: 'Bidang Pencegahan & Kesiapsiagaan',
-      pakaian: 'Seragam Lapangan BPBD',
-      nomorSurat: '360/119/PK-BPBD/2026',
-      kategori: 'Kunjungan / Dinas',
-      status: 'Terjadwal',
-      statusDisposisi: 'Disetujui Pimpinan',
-      pejabatPendamping: 'Bid. PK & Bid. Damkarmat',
-      isConfidential: false,
-      isUpdated: true,
-      catatan: 'Membawa peralatan demonstrasi evakuasi mandiri.',
-      sumber: 'e-Buddy',
-      createdBy: 'Siti Aminah, A.Md',
-      createdAt: new Date().toISOString(),
-    },
-    {
-      id: 'ag-5',
-      judul: 'Rapat Koordinasi Pembentukan Desa Tangguh Bencana (Destana)',
-      tanggal: tomorrow,
-      jamMulai: '09:00',
-      jamSelesai: '11:30',
-      lokasi: 'Ruang Rapat Pusdalops BPBD Sidoarjo',
-      penyelenggara: 'Bidang Pencegahan & Kesiapsiagaan',
-      pakaian: 'PDH Khaki',
-      nomorSurat: '360/774/PK-BPBD/2026',
-      kategori: 'Rapat Internal',
-      status: 'Terjadwal',
-      statusDisposisi: 'Menunggu Disposisi',
-      pejabatPendamping: 'Kabid PK',
-      isConfidential: false,
-      catatan: 'Evaluasi desa rawan banjir wilayah Porong dan Tanggulangin.',
-      sumber: 'Manual',
-      createdBy: 'Siti Aminah, A.Md',
-      createdAt: new Date().toISOString(),
-    },
-    {
-      id: 'ag-6',
-      judul: 'Forum Koordinasi Rehabilitasi & Rekonstruksi Pasca Bencana',
-      tanggal: plus2,
-      jamMulai: '10:00',
-      jamSelesai: '12:30',
-      lokasi: 'Ruang Rapat Setda Kab. Sidoarjo',
-      penyelenggara: 'Bidang Rehabilitasi & Rekonstruksi',
-      pakaian: 'Batik Resmi',
-      nomorSurat: '360/810/RR-BPBD/2026',
-      kategori: 'Undangan Resmi',
-      status: 'Draft',
-      statusDisposisi: 'Menunggu Disposisi',
-      pejabatPendamping: 'Kabid RR',
-      isConfidential: false,
-      catatan: 'Menunggu arahan Sekretaris BPBD.',
-      sumber: 'Manual',
-      createdBy: 'Siti Aminah, A.Md',
-      createdAt: new Date().toISOString(),
-    },
-    {
-      id: 'ag-7',
-      judul: 'Apel Gelar Pasukan & Pengecekan Peralatan SAR BPBD Sidoarjo',
-      tanggal: minus1,
-      jamMulai: '07:30',
-      jamSelesai: '09:30',
-      lokasi: 'Halaman Mako BPBD Jl. Raya Kemiri No. 1',
-      penyelenggara: 'Bidang Kedaruratan & Logistik',
-      pakaian: 'Seragam PDL Lengkap',
-      nomorSurat: '360/1401/BPBD/2026',
-      kategori: 'Rapat Internal',
-      status: 'Selesai',
-      statusDisposisi: 'Hadir Dikonfirmasi',
-      pejabatPendamping: 'Kalaksa & Tim TRC',
-      isConfidential: false,
-      catatan: 'Seluruh unit pompa portabel terverifikasi siap.',
-      sumber: 'Manual',
-      createdBy: 'Siti Aminah, A.Md',
-      createdAt: new Date().toISOString(),
-    },
-    {
-      id: 'ag-8',
-      judul: 'Evaluasi Sistem Peringatan Dini & Arsip e-Buddy Triwulan',
-      tanggal: minus2,
-      jamMulai: '13:30',
-      jamSelesai: '15:30',
-      lokasi: 'Ruang Rapat Pusdalops BPBD Sidoarjo',
-      penyelenggara: 'Sekretariat BPBD',
-      pakaian: 'PDH Khaki',
-      nomorSurat: '360/1388/BPBD/2026',
-      kategori: 'Rapat Internal',
-      status: 'Selesai',
-      statusDisposisi: 'Disetujui Pimpinan',
-      pejabatPendamping: 'Sekretaris BPBD',
-      isConfidential: false,
-      catatan: 'Notulensi telah diarsipkan.',
-      sumber: 'e-Buddy',
-      createdBy: 'Rizky Pratama, S.Kom',
-      createdAt: new Date().toISOString(),
-    },
-  ];
 }
 
 export function getEBuddyTemplates(todayISO: string) {

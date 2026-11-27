@@ -42,15 +42,23 @@ import {
 } from './posterCanvas';
 import {
   deleteAgendaFromSupabase,
+  deleteUserFromSupabase,
   fetchAgendasFromSupabase,
   fetchConflictsFromSupabase,
+  fetchUsersFromSupabase,
   generateAgendaUuid,
   insertAgendaToSupabase,
+  insertUserToSupabase,
   isSupabaseConfigured,
+  normalizeRoleCode,
   sanitizeZoomUrl,
   subscribeAgendasRealtime,
+  subscribeUsersRealtime,
   syncImportedAgendasToSupabase,
+  syncImportedUsersToSupabase,
+  toggleUserStatusInSupabase,
   updateAgendaInSupabase,
+  updateUserInSupabase,
 } from './supabaseClient';
 import {
   AUDIT_STORAGE_KEY,
@@ -76,10 +84,8 @@ import {
   SESSION_DURATION_MS,
   SESSION_LOCAL_KEY,
   SESSION_TEMP_KEY,
-  USERS_STORAGE_KEY,
   UserAccount,
   createInitialMasterUnits,
-  createInitialUsers,
   extractEBuddyText,
   findNextAvailableSlot,
   formatRentangWaktu,
@@ -156,14 +162,10 @@ function safeParseJson<T>(raw: string | null, fallback: T): T {
 export default function App() {
   const todayISO = useMemo(() => getLocalISODate(), []);
 
-  // Persistent States
-  const [users, setUsers] = useState<UserAccount[]>(() => {
-    const saved = safeParseJson<UserAccount[] | null>(
-      localStorage.getItem(USERS_STORAGE_KEY),
-      null
-    );
-    return saved && saved.length > 0 ? saved : createInitialUsers();
-  });
+  // Persistent States (Supabase-backed for akun_asn & agenda)
+  const [users, setUsers] = useState<UserAccount[]>([]);
+  const [isLoadingUsers, setIsLoadingUsers] = useState<boolean>(isSupabaseConfigured);
+  const [isSavingUser, setIsSavingUser] = useState<boolean>(false);
 
   const [agendas, setAgendas] = useState<AgendaItem[]>([]);
   const [isLoadingAgendas, setIsLoadingAgendas] = useState<boolean>(isSupabaseConfigured);
@@ -214,10 +216,33 @@ export default function App() {
     return users.find((u) => u.id === session.userId && u.isActive) || null;
   }, [session, users]);
 
-  // Persist non-agenda app settings
-  useEffect(() => {
-    localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(users));
-  }, [users]);
+  const loadUsersFromDb = useCallback(async (silent = false) => {
+    if (!isSupabaseConfigured) {
+      setIsLoadingUsers(false);
+      setSupabaseError(
+        'Environment variables VITE_SUPABASE_URL dan VITE_SUPABASE_ANON_KEY belum dikonfigurasi.'
+      );
+      return;
+    }
+    if (!silent) {
+      setIsLoadingUsers(true);
+    }
+    try {
+      const rows = await fetchUsersFromSupabase();
+      setUsers(rows);
+      setSupabaseError('');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Gagal memuat akun ASN dari Supabase.';
+      setSupabaseError(msg);
+      if (!silent) {
+        notify(`Gagal memuat tabel akun_asn: ${msg}`, 'warning');
+      }
+    } finally {
+      if (!silent) {
+        setIsLoadingUsers(false);
+      }
+    }
+  }, []);
 
   const loadAgendasFromDb = useCallback(async (silent = false) => {
     if (!isSupabaseConfigured) {
@@ -238,7 +263,7 @@ export default function App() {
       const msg = err instanceof Error ? err.message : 'Gagal memuat data dari Supabase.';
       setSupabaseError(msg);
       if (!silent) {
-        notify(`Gagal memuat jadwal Supabase: ${msg}`, 'warning');
+        notify(`Gagal memuat tabel agenda: ${msg}`, 'warning');
       }
     } finally {
       if (!silent) {
@@ -248,14 +273,19 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    void loadUsersFromDb(false);
     void loadAgendasFromDb(false);
-    const unsubscribe = subscribeAgendasRealtime(() => {
+    const unsubUsers = subscribeUsersRealtime(() => {
+      void loadUsersFromDb(true);
+    });
+    const unsubAgendas = subscribeAgendasRealtime(() => {
       void loadAgendasFromDb(true);
     });
     return () => {
-      unsubscribe();
+      unsubUsers();
+      unsubAgendas();
     };
-  }, [loadAgendasFromDb]);
+  }, [loadUsersFromDb, loadAgendasFromDb]);
 
   useEffect(() => {
     localStorage.setItem(MASTER_STORAGE_KEY, JSON.stringify(masterUnits));
@@ -269,13 +299,22 @@ export default function App() {
     localStorage.setItem(ORG_TITLE_KEY, orgTitle);
   }, [orgTitle]);
 
-  // Login State
+  // Login State & First-Run Bootstrap State
   const [loginIdentity, setLoginIdentity] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [rememberSession, setRememberSession] = useState(true);
   const [loginError, setLoginError] = useState('');
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [showForgotHelp, setShowForgotHelp] = useState(false);
+  const [bootstrapAdmin, setBootstrapAdmin] = useState({
+    namaLengkap: '',
+    nip: '',
+    jabatan: 'Kepala Pelaksana / Admin Sistem',
+    bidang: 'Sekretariat BPBD',
+    username: '',
+  });
+  const [isBootstrappingAdmin, setIsBootstrappingAdmin] = useState(false);
   const [lockState, setLockState] = useState<{ failed: number; lockedUntil: number }>(() => {
     return safeParseJson(localStorage.getItem(LOCKOUT_STORAGE_KEY), {
       failed: 0,
@@ -481,7 +520,7 @@ export default function App() {
     Math.ceil((lockState.lockedUntil - nowTick) / 1000)
   );
 
-  const handleLoginSubmit = (e: React.FormEvent) => {
+  const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError('');
 
@@ -494,84 +533,153 @@ export default function App() {
 
     const identity = loginIdentity.trim().toLowerCase();
     const pwd = loginPassword;
-    if (!identity || !pwd) {
-      setLoginError('Harap isi NIP / Username Kedinasan dan Kata Sandi.');
+    if (!identity) {
+      setLoginError('Harap isi NIP atau Username Kedinasan Anda.');
       return;
     }
 
-    const matched = users.find(
-      (u) =>
-        u.nip.toLowerCase() === identity ||
-        u.username.toLowerCase() === identity ||
-        u.email.toLowerCase() === identity
-    );
+    setIsLoggingIn(true);
+    try {
+      const liveUsers = isSupabaseConfigured ? await fetchUsersFromSupabase() : users;
+      if (isSupabaseConfigured) {
+        setUsers(liveUsers);
+        setSupabaseError('');
+      }
 
-    if (!matched || matched.password !== pwd) {
-      const nextFailed = lockState.failed + 1;
-      const shouldLock = nextFailed >= MAX_FAILED_ATTEMPTS;
-      const nextLockState = {
-        failed: shouldLock ? 0 : nextFailed,
-        lockedUntil: shouldLock ? Date.now() + LOCKOUT_DURATION_MS : 0,
+      const matched = liveUsers.find(
+        (u) =>
+          u.nip.toLowerCase() === identity ||
+          u.username.toLowerCase() === identity ||
+          (u.email && u.email.toLowerCase() === identity)
+      );
+
+      const passwordRequired = Boolean(matched?.password);
+      if (!matched || (passwordRequired && matched.password !== pwd)) {
+        const nextFailed = lockState.failed + 1;
+        const shouldLock = nextFailed >= MAX_FAILED_ATTEMPTS;
+        const nextLockState = {
+          failed: shouldLock ? 0 : nextFailed,
+          lockedUntil: shouldLock ? Date.now() + LOCKOUT_DURATION_MS : 0,
+        };
+        setLockState(nextLockState);
+        localStorage.setItem(LOCKOUT_STORAGE_KEY, JSON.stringify(nextLockState));
+        appendAudit(
+          'LOGIN_GAGAL',
+          shouldLock ? 'PERINGATAN' : 'GAGAL',
+          `Percobaan masuk gagal untuk "${loginIdentity.trim()}" (${nextFailed}/${MAX_FAILED_ATTEMPTS}).`,
+          matched || null
+        );
+        setLoginError(
+          shouldLock
+            ? 'Terlalu banyak percobaan gagal (5x). Portal dikunci 15 menit demi keamanan.'
+            : `NIP / Username tidak ditemukan di tabel akun_asn${passwordRequired ? ' atau kata sandi salah' : ''}. Sisa percobaan: ${MAX_FAILED_ATTEMPTS - nextFailed}x.`
+        );
+        return;
+      }
+
+      if (!matched.isActive) {
+        appendAudit(
+          'LOGIN_NONAKTIF',
+          'PERINGATAN',
+          `Akun nonaktif (${matched.username}) mencoba masuk.`,
+          matched
+        );
+        setLoginError('Akun ASN ini berstatus Nonaktif pada tabel akun_asn.');
+        return;
+      }
+
+      // Success
+      const resetLock = { failed: 0, lockedUntil: 0 };
+      setLockState(resetLock);
+      localStorage.setItem(LOCKOUT_STORAGE_KEY, JSON.stringify(resetLock));
+
+      const newSess: AuthSession = {
+        userId: matched.id,
+        remember: rememberSession,
+        loginAt: Date.now(),
+        expiresAt: Date.now() + SESSION_DURATION_MS,
       };
-      setLockState(nextLockState);
-      localStorage.setItem(LOCKOUT_STORAGE_KEY, JSON.stringify(nextLockState));
-      appendAudit(
-        'LOGIN_GAGAL',
-        shouldLock ? 'PERINGATAN' : 'GAGAL',
-        `Percobaan masuk gagal untuk "${loginIdentity.trim()}" (${nextFailed}/${MAX_FAILED_ATTEMPTS}).`,
-        matched || null
-      );
-      setLoginError(
-        shouldLock
-          ? 'Terlalu banyak percobaan gagal (5x). Portal dikunci 15 menit demi keamanan.'
-          : `NIP/Username atau Kata Sandi salah. Sisa percobaan: ${MAX_FAILED_ATTEMPTS - nextFailed}x.`
-      );
-      return;
-    }
+      if (rememberSession) {
+        localStorage.setItem(SESSION_LOCAL_KEY, JSON.stringify(newSess));
+        sessionStorage.removeItem(SESSION_TEMP_KEY);
+      } else {
+        sessionStorage.setItem(SESSION_TEMP_KEY, JSON.stringify(newSess));
+        localStorage.removeItem(SESSION_LOCAL_KEY);
+      }
 
-    if (!matched.isActive) {
+      setSession(newSess);
+      setActiveView('dashboard');
+      setLoginPassword('');
       appendAudit(
-        'LOGIN_NONAKTIF',
-        'PERINGATAN',
-        `Akun nonaktif (${matched.username}) mencoba masuk.`,
+        'LOGIN_SUKSES',
+        'SUKSES',
+        `Berhasil masuk sebagai ${ROLE_META[matched.roleKode].shortLabel}.`,
         matched
       );
-      setLoginError('Akun ASN ini sedang dinonaktifkan oleh Super Admin.');
+      notify(`Selamat datang, ${matched.namaLengkap}`, 'success');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Gagal memverifikasi akun di Supabase.';
+      setSupabaseError(msg);
+      setLoginError(`Gagal memverifikasi akun ke Supabase: ${msg}`);
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  const handleBootstrapFirstAdmin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isBootstrappingAdmin) return;
+    if (
+      !bootstrapAdmin.namaLengkap.trim() ||
+      !bootstrapAdmin.nip.trim() ||
+      !bootstrapAdmin.username.trim()
+    ) {
+      setLoginError('Nama Lengkap, NIP, dan Username wajib diisi untuk membuat Super Admin.');
       return;
     }
 
-    // Success
-    const resetLock = { failed: 0, lockedUntil: 0 };
-    setLockState(resetLock);
-    localStorage.setItem(LOCKOUT_STORAGE_KEY, JSON.stringify(resetLock));
-
-    const newSess: AuthSession = {
-      userId: matched.id,
-      remember: rememberSession,
-      loginAt: Date.now(),
-      expiresAt: Date.now() + SESSION_DURATION_MS,
-    };
-    if (rememberSession) {
-      localStorage.setItem(SESSION_LOCAL_KEY, JSON.stringify(newSess));
-      sessionStorage.removeItem(SESSION_TEMP_KEY);
-    } else {
-      sessionStorage.setItem(SESSION_TEMP_KEY, JSON.stringify(newSess));
-      localStorage.removeItem(SESSION_LOCAL_KEY);
+    setIsBootstrappingAdmin(true);
+    setLoginError('');
+    try {
+      const created = await insertUserToSupabase({
+        id: generateAgendaUuid(),
+        namaLengkap: bootstrapAdmin.namaLengkap.trim(),
+        nip: bootstrapAdmin.nip.trim(),
+        jabatan: bootstrapAdmin.jabatan.trim() || 'Super Admin SIAGA',
+        bidang: bootstrapAdmin.bidang.trim() || 'Sekretariat BPBD',
+        username: bootstrapAdmin.username.trim(),
+        email: '',
+        roleKode: 'ROLE_SUPER_ADMIN',
+        isActive: true,
+      });
+      await loadUsersFromDb(true);
+      const newSess: AuthSession = {
+        userId: created.id,
+        remember: rememberSession,
+        loginAt: Date.now(),
+        expiresAt: Date.now() + SESSION_DURATION_MS,
+      };
+      if (rememberSession) {
+        localStorage.setItem(SESSION_LOCAL_KEY, JSON.stringify(newSess));
+      } else {
+        sessionStorage.setItem(SESSION_TEMP_KEY, JSON.stringify(newSess));
+      }
+      setSession(newSess);
+      setActiveView('dashboard');
+      appendAudit(
+        'BOOTSTRAP_SUPER_ADMIN',
+        'SUKSES',
+        `Akun Super Admin pertama (${created.username}) disimpan ke tabel akun_asn.`,
+        created
+      );
+      notify(`Akun Super Admin "${created.namaLengkap}" tersimpan di Supabase.`, 'success');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Gagal membuat akun Super Admin di Supabase.';
+      setSupabaseError(msg);
+      setLoginError(`Gagal menyimpan ke tabel akun_asn: ${msg}`);
+    } finally {
+      setIsBootstrappingAdmin(false);
     }
-
-    setUsers((prev) =>
-      prev.map((u) => (u.id === matched.id ? { ...u, lastLogin: new Date().toISOString() } : u))
-    );
-    setSession(newSess);
-    setActiveView('dashboard');
-    setLoginPassword('');
-    appendAudit(
-      'LOGIN_SUKSES',
-      'SUKSES',
-      `Berhasil masuk sebagai ${ROLE_META[matched.roleKode].shortLabel}.`,
-      matched
-    );
-    notify(`Selamat datang, ${matched.namaLengkap}`, 'success');
   };
 
   const handleLogout = () => {
@@ -704,14 +812,19 @@ export default function App() {
       });
 
       if (agendaForm.id) {
-        const updated = await updateAgendaInSupabase(agendaForm.id, {
-          ...agendaForm,
-          jamSelesai: resolvedEnd,
-          judul: agendaForm.judul.trim(),
-          lokasi: agendaForm.lokasi.trim() || 'Menunggu konfirmasi',
-          zoomUrl: sanitizeZoomUrl(agendaForm.zoomUrl),
-        });
-        setAgendas((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
+        const existingItem = agendas.find((a) => a.id === agendaForm.id);
+        const updated = await updateAgendaInSupabase(
+          agendaForm.id,
+          {
+            ...agendaForm,
+            jamSelesai: resolvedEnd,
+            judul: agendaForm.judul.trim(),
+            lokasi: agendaForm.lokasi.trim() || 'Menunggu konfirmasi',
+            zoomUrl: sanitizeZoomUrl(agendaForm.zoomUrl),
+          },
+          existingItem
+        );
+        await loadAgendasFromDb(true);
         if (focusedAgenda?.id === updated.id) {
           setFocusedAgenda(updated);
         }
@@ -737,7 +850,7 @@ export default function App() {
           createdAt: new Date().toISOString(),
         };
         const created = await insertAgendaToSupabase(createdPayload);
-        setAgendas((prev) => [created, ...prev]);
+        await loadAgendasFromDb(true);
         setSelectedDate(created.tanggal);
         setSelectedMonth(created.tanggal.slice(0, 7));
         setSupabaseError('');
@@ -774,7 +887,7 @@ export default function App() {
       onConfirm: async () => {
         try {
           await deleteAgendaFromSupabase(item.id);
-          setAgendas((prev) => prev.filter((a) => a.id !== item.id));
+          await loadAgendasFromDb(true);
           if (focusedAgenda?.id === item.id) {
             setFocusedAgenda(null);
           }
@@ -794,8 +907,8 @@ export default function App() {
   const handleToggleStatus = async (item: AgendaItem) => {
     const nextStatus: AgendaStatus = item.status === 'Selesai' ? 'Terjadwal' : 'Selesai';
     try {
-      const updated = await updateAgendaInSupabase(item.id, { status: nextStatus });
-      setAgendas((prev) => prev.map((a) => (a.id === item.id ? updated : a)));
+      const updated = await updateAgendaInSupabase(item.id, { status: nextStatus }, item);
+      await loadAgendasFromDb(true);
       if (focusedAgenda?.id === item.id) {
         setFocusedAgenda(updated);
       }
@@ -908,7 +1021,6 @@ export default function App() {
         nip: '',
         username: '',
         email: '',
-        password: 'Bpbd2026!',
         namaLengkap: '',
         jabatan: '',
         bidang: 'Sekretariat BPBD',
@@ -919,38 +1031,73 @@ export default function App() {
     setUserModalOpen(true);
   };
 
-  const handleSaveUser = (e: React.FormEvent) => {
+  const handleSaveUser = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSavingUser) return;
     if (!userForm.nip.trim() || !userForm.username.trim() || !userForm.namaLengkap.trim()) {
       notify('NIP, Username, dan Nama Lengkap wajib diisi.', 'warning');
       return;
     }
-    if (userForm.id) {
-      setUsers((prev) => prev.map((u) => (u.id === userForm.id ? { ...userForm } : u)));
-      appendAudit('EDIT_USER', 'SUKSES', `Super Admin memperbarui akun ${userForm.username}.`);
-      notify('Akun ASN berhasil diperbarui.', 'success');
-    } else {
-      const created: UserAccount = { ...userForm, id: `usr-${Date.now()}` };
-      setUsers((prev) => [...prev, created]);
-      appendAudit('TAMBAH_USER', 'SUKSES', `Super Admin membuat akun ${created.username}.`);
-      notify('Akun ASN baru berhasil dibuat.', 'success');
+
+    setIsSavingUser(true);
+    try {
+      if (userForm.id) {
+        const updated = await updateUserInSupabase(userForm.id, userForm);
+        await loadUsersFromDb(true);
+        appendAudit(
+          'EDIT_USER',
+          'SUKSES',
+          `Super Admin memperbarui akun ${updated.username} di tabel akun_asn.`
+        );
+        notify('Akun ASN berhasil diperbarui di Supabase.', 'success');
+      } else {
+        const created = await insertUserToSupabase({
+          ...userForm,
+          id: generateAgendaUuid(),
+        });
+        await loadUsersFromDb(true);
+        appendAudit(
+          'TAMBAH_USER',
+          'SUKSES',
+          `Super Admin membuat akun ${created.username} di tabel akun_asn.`
+        );
+        notify('Akun ASN baru berhasil disimpan ke Supabase.', 'success');
+      }
+      setSupabaseError('');
+      setUserModalOpen(false);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Gagal menyimpan akun ASN ke Supabase.';
+      setSupabaseError(msg);
+      notify(`Gagal menyimpan ke tabel akun_asn: ${msg}`, 'warning');
+    } finally {
+      setIsSavingUser(false);
     }
-    setUserModalOpen(false);
   };
 
-  const handleToggleUserActive = (u: UserAccount) => {
+  const handleToggleUserActive = async (u: UserAccount) => {
     if (u.id === currentUser?.id) {
       notify('Tidak dapat menonaktifkan akun yang sedang dipakai.', 'warning');
       return;
     }
-    setUsers((prev) =>
-      prev.map((usr) => (usr.id === u.id ? { ...usr, isActive: !usr.isActive } : usr))
-    );
-    appendAudit(
-      'STATUS_USER',
-      'PERINGATAN',
-      `Status akun ${u.username} diubah menjadi ${u.isActive ? 'Nonaktif' : 'Aktif'}.`
-    );
+    const nextActive = !u.isActive;
+    try {
+      await toggleUserStatusInSupabase(u.id, nextActive);
+      await loadUsersFromDb(true);
+      setSupabaseError('');
+      appendAudit(
+        'STATUS_USER',
+        'PERINGATAN',
+        `Status akun ${u.username} diubah menjadi ${nextActive ? 'Aktif' : 'Nonaktif'} di Supabase.`
+      );
+      notify(
+        `Status akun "${u.namaLengkap}" diubah menjadi ${nextActive ? 'Aktif' : 'Nonaktif'}.`,
+        'info'
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Gagal mengubah status akun ASN.';
+      setSupabaseError(msg);
+      notify(`Gagal update status akun_asn: ${msg}`, 'warning');
+    }
   };
 
   const handleRequestDeleteUser = (u: UserAccount) => {
@@ -960,13 +1107,25 @@ export default function App() {
     }
     setConfirmDialog({
       title: 'Hapus Akun ASN',
-      message: `Hapus permanen akun "${u.namaLengkap}" (${u.username})?`,
+      message: `Hapus permanen akun "${u.namaLengkap}" (${u.username}) dari database Supabase?`,
       confirmLabel: 'Hapus Akun',
-      onConfirm: () => {
-        setUsers((prev) => prev.filter((usr) => usr.id !== u.id));
-        appendAudit('HAPUS_USER', 'PERINGATAN', `Super Admin menghapus akun ${u.username}.`);
-        notify('Akun ASN berhasil dihapus.', 'success');
-        setConfirmDialog(null);
+      onConfirm: async () => {
+        try {
+          await deleteUserFromSupabase(u.id);
+          await loadUsersFromDb(true);
+          setSupabaseError('');
+          appendAudit(
+            'HAPUS_USER',
+            'PERINGATAN',
+            `Super Admin menghapus akun ${u.username} dari tabel akun_asn.`
+          );
+          notify('Akun ASN berhasil dihapus dari Supabase.', 'success');
+          setConfirmDialog(null);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : 'Gagal menghapus akun ASN di Supabase.';
+          setSupabaseError(msg);
+          notify(`Gagal menghapus dari akun_asn: ${msg}`, 'warning');
+        }
       },
     });
   };
@@ -1153,9 +1312,31 @@ export default function App() {
         );
       }
       if (Array.isArray(obj.users)) {
-        rawUsers = obj.users.filter(
-          (u) => u && typeof u.id === 'string' && typeof u.username === 'string'
-        );
+        rawUsers = obj.users
+          .map((rawU): UserAccount | null => {
+            if (!rawU || typeof rawU !== 'object') return null;
+            const r = rawU as unknown as Record<string, unknown>;
+            const username = String(r.username || '').trim();
+            const nama = String(r.namaLengkap ?? r.nama ?? '').trim();
+            if (!username || !nama) return null;
+            const rawStatus = r.status ?? r.isActive;
+            const isActive =
+              typeof rawStatus === 'boolean'
+                ? rawStatus
+                : String(rawStatus ?? 'Aktif').trim().toLowerCase() !== 'nonaktif';
+            return {
+              id: String(r.id || generateAgendaUuid()),
+              nip: String(r.nip || ''),
+              username,
+              email: '',
+              namaLengkap: nama,
+              jabatan: String(r.jabatan || ''),
+              bidang: String(r.bidang ?? r.unit_kerja ?? 'Sekretariat BPBD'),
+              roleKode: normalizeRoleCode(r.roleKode ?? r.role),
+              isActive,
+            };
+          })
+          .filter((x): x is UserAccount => x !== null);
       }
       if (typeof obj.exportedAt === 'string') exportedAt = obj.exportedAt;
       if (typeof obj.orgTitle === 'string' && obj.orgTitle.trim()) {
@@ -1167,9 +1348,13 @@ export default function App() {
       .map((item, idx) => normalizeImportedAgenda(item, idx))
       .filter((x): x is AgendaItem => x !== null);
 
-    if (cleanAgendas.length === 0 && (!rawMaster || rawMaster.length === 0)) {
+    if (
+      cleanAgendas.length === 0 &&
+      (!rawMaster || rawMaster.length === 0) &&
+      (!rawUsers || rawUsers.length === 0)
+    ) {
       setImportError(
-        'File JSON tidak berisi data agenda atau master unit yang valid. Pastikan Anda memilih file backup SIAGA (.json).'
+        'File JSON tidak berisi data agenda, akun ASN, atau master unit yang valid. Pastikan Anda memilih file backup SIAGA (.json).'
       );
       return;
     }
@@ -1226,7 +1411,18 @@ export default function App() {
         importPreview.agendas,
         mode
       );
-      setAgendas(saved);
+      await loadAgendasFromDb(true);
+
+      if (
+        perms.canManageUsers &&
+        importIncludeUsers &&
+        importPreview.users &&
+        importPreview.users.length > 0
+      ) {
+        await syncImportedUsersToSupabase(importPreview.users, mode);
+        await loadUsersFromDb(true);
+      }
+
       setSupabaseError('');
 
       if (mode === 'replace') {
@@ -1235,14 +1431,6 @@ export default function App() {
         }
         if (importPreview.orgTitle) {
           setOrgTitle(importPreview.orgTitle);
-        }
-        if (
-          perms.canManageUsers &&
-          importIncludeUsers &&
-          importPreview.users &&
-          importPreview.users.length > 0
-        ) {
-          setUsers(importPreview.users);
         }
         appendAudit(
           'IMPORT_RESTORE_PENUH',
@@ -1259,18 +1447,6 @@ export default function App() {
             const existingIds = new Set(prev.map((m) => m.id));
             const newUnits = importPreview.masterUnits!.filter((m) => !existingIds.has(m.id));
             return [...newUnits, ...prev];
-          });
-        }
-        if (
-          perms.canManageUsers &&
-          importIncludeUsers &&
-          importPreview.users &&
-          importPreview.users.length > 0
-        ) {
-          setUsers((prev) => {
-            const existingIds = new Set(prev.map((u) => u.id));
-            const newUsers = importPreview.users!.filter((u) => !existingIds.has(u.id));
-            return [...prev, ...newUsers];
           });
         }
         appendAudit(
@@ -1414,7 +1590,7 @@ export default function App() {
                     Portal Masuk SIAGA
                   </h2>
                   <p className="text-xs text-slate-500 mt-0.5">
-                    Gunakan NIP, Email Dinas, atau Username Anda
+                    Verifikasi langsung dengan tabel <code className="font-mono text-[11px]">akun_asn</code> di Supabase
                   </p>
                 </div>
                 <div className="flex items-center gap-1.5 shrink-0">
@@ -1433,6 +1609,22 @@ export default function App() {
                 </div>
               </div>
 
+              {supabaseError && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900 space-y-2">
+                  <div className="flex items-start gap-2">
+                    <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+                    <span>{supabaseError}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void loadUsersFromDb(false)}
+                    className="px-3 py-1 rounded-lg bg-amber-700 hover:bg-amber-800 text-white text-[11px] font-bold"
+                  >
+                    Muat Ulang dari Supabase
+                  </button>
+                </div>
+              )}
+
               {loginError && (
                 <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs sm:text-sm text-rose-800 flex items-start gap-2.5">
                   <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
@@ -1440,82 +1632,174 @@ export default function App() {
                 </div>
               )}
 
-              <form onSubmit={handleLoginSubmit} className="space-y-4">
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                    NIP / Username Kedinasan <span className="text-rose-600">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    value={loginIdentity}
-                    onChange={(e) => setLoginIdentity(e.target.value)}
-                    placeholder="Masukkan 18 digit NIP atau username..."
-                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 bg-slate-50/50 text-sm text-slate-900 placeholder:text-slate-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-600/25 focus:border-emerald-700 transition"
-                    autoComplete="username"
-                  />
+              {isLoadingUsers && users.length === 0 && !supabaseError ? (
+                <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 px-4 py-4 text-xs font-semibold text-emerald-800 text-center">
+                  Mengambil daftar akun ASN dari Supabase...
                 </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                    Kata Sandi <span className="text-rose-600">*</span>
-                  </label>
-                  <div className="relative">
+              ) : !isLoadingUsers && isSupabaseConfigured && !supabaseError && users.length === 0 ? (
+                <form onSubmit={handleBootstrapFirstAdmin} className="space-y-3">
+                  <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-3 text-xs text-emerald-950">
+                    Tabel <code className="font-mono font-bold">akun_asn</code> di Supabase masih kosong. Daftarkan <strong>Akun Super Admin Pertama</strong> untuk mulai mengelola sistem:
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">
+                      Nama Lengkap ASN <span className="text-rose-600">*</span>
+                    </label>
                     <input
-                      type={showPassword ? 'text' : 'password'}
-                      value={loginPassword}
-                      onChange={(e) => setLoginPassword(e.target.value)}
-                      placeholder="Masukkan kata sandi..."
-                      className="w-full pl-3.5 pr-11 py-2.5 rounded-xl border border-slate-300 bg-slate-50/50 text-sm text-slate-900 placeholder:text-slate-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-600/25 focus:border-emerald-700 transition"
-                      autoComplete="current-password"
+                      type="text"
+                      required
+                      value={bootstrapAdmin.namaLengkap}
+                      onChange={(e) =>
+                        setBootstrapAdmin({ ...bootstrapAdmin, namaLengkap: e.target.value })
+                      }
+                      placeholder="Contoh: Drs. Budi Santoso, M.Si."
+                      className="w-full px-3.5 py-2 rounded-xl border border-slate-300 text-sm"
                     />
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">
+                        NIP <span className="text-rose-600">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={bootstrapAdmin.nip}
+                        onChange={(e) =>
+                          setBootstrapAdmin({ ...bootstrapAdmin, nip: e.target.value })
+                        }
+                        placeholder="18 digit NIP"
+                        className="w-full px-3 py-2 rounded-xl border border-slate-300 text-sm font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">
+                        Username <span className="text-rose-600">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={bootstrapAdmin.username}
+                        onChange={(e) =>
+                          setBootstrapAdmin({ ...bootstrapAdmin, username: e.target.value })
+                        }
+                        placeholder="admin.bpbd"
+                        className="w-full px-3 py-2 rounded-xl border border-slate-300 text-sm font-mono"
+                      />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">Jabatan</label>
+                      <input
+                        type="text"
+                        value={bootstrapAdmin.jabatan}
+                        onChange={(e) =>
+                          setBootstrapAdmin({ ...bootstrapAdmin, jabatan: e.target.value })
+                        }
+                        className="w-full px-3 py-2 rounded-xl border border-slate-300 text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">Unit Kerja</label>
+                      <input
+                        type="text"
+                        value={bootstrapAdmin.bidang}
+                        onChange={(e) =>
+                          setBootstrapAdmin({ ...bootstrapAdmin, bidang: e.target.value })
+                        }
+                        className="w-full px-3 py-2 rounded-xl border border-slate-300 text-sm"
+                      />
+                    </div>
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={isBootstrappingAdmin}
+                    className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-[#065F46] via-[#047857] to-[#033A2C] hover:opacity-95 disabled:opacity-50 text-white text-sm font-bold tracking-wide shadow-md transition cursor-pointer"
+                  >
+                    {isBootstrappingAdmin
+                      ? 'MENYIMPAN KE SUPABASE...'
+                      : 'SIMPAN SUPER ADMIN & MASUK'}
+                  </button>
+                </form>
+              ) : (
+                <form onSubmit={handleLoginSubmit} className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                      NIP / Username Kedinasan <span className="text-rose-600">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={loginIdentity}
+                      onChange={(e) => setLoginIdentity(e.target.value)}
+                      placeholder="Masukkan NIP atau username terdaftar..."
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 bg-slate-50/50 text-sm text-slate-900 placeholder:text-slate-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-600/25 focus:border-emerald-700 transition"
+                      autoComplete="username"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                      Kata Sandi <span className="text-[11px] font-normal text-slate-400">(opsional jika akun tanpa sandi)</span>
+                    </label>
+                    <div className="relative">
+                      <input
+                        type={showPassword ? 'text' : 'password'}
+                        value={loginPassword}
+                        onChange={(e) => setLoginPassword(e.target.value)}
+                        placeholder="Kosongkan jika langsung via NIP/Username..."
+                        className="w-full pl-3.5 pr-11 py-2.5 rounded-xl border border-slate-300 bg-slate-50/50 text-sm text-slate-900 placeholder:text-slate-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-600/25 focus:border-emerald-700 transition"
+                        autoComplete="current-password"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword((prev) => !prev)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 p-1"
+                        aria-label={showPassword ? 'Sembunyikan kata sandi' : 'Tampilkan kata sandi'}
+                      >
+                        {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                    <label className="inline-flex items-center gap-2 text-slate-600 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={rememberSession}
+                        onChange={(e) => setRememberSession(e.target.checked)}
+                        className="w-4 h-4 rounded border-slate-300 text-emerald-700 focus:ring-emerald-600"
+                      />
+                      <span>Ingat sesi jam kerja (8 jam)</span>
+                    </label>
                     <button
                       type="button"
-                      onClick={() => setShowPassword((prev) => !prev)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 p-1"
-                      aria-label={showPassword ? 'Sembunyikan kata sandi' : 'Tampilkan kata sandi'}
+                      onClick={() => setShowForgotHelp((p) => !p)}
+                      className="inline-flex items-center gap-1 text-emerald-700 hover:underline font-semibold shrink-0"
                     >
-                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      <HelpCircle className="w-3.5 h-3.5" />
+                      <span>Bantuan Akses?</span>
                     </button>
                   </div>
-                </div>
 
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
-                  <label className="inline-flex items-center gap-2 text-slate-600 cursor-pointer select-none">
-                    <input
-                      type="checkbox"
-                      checked={rememberSession}
-                      onChange={(e) => setRememberSession(e.target.checked)}
-                      className="w-4 h-4 rounded border-slate-300 text-emerald-700 focus:ring-emerald-600"
-                    />
-                    <span>Ingat sesi jam kerja (8 jam)</span>
-                  </label>
+                  {showForgotHelp && (
+                    <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-3.5 text-xs text-emerald-950">
+                      Masuk menggunakan NIP atau Username yang berstatus <strong>Aktif</strong> pada tabel <code className="font-mono">akun_asn</code> di Supabase. Hubungi Super Admin BPBD Sidoarjo jika akun Anda belum terdaftar.
+                    </div>
+                  )}
+
                   <button
-                    type="button"
-                    onClick={() => setShowForgotHelp((p) => !p)}
-                    className="inline-flex items-center gap-1 text-emerald-700 hover:underline font-semibold shrink-0"
+                    type="submit"
+                    disabled={remainingLockSeconds > 0 || isLoggingIn}
+                    className="w-full py-3.5 px-4 rounded-xl bg-gradient-to-r from-[#065F46] via-[#047857] to-[#033A2C] hover:opacity-95 disabled:opacity-50 text-white text-sm font-bold tracking-wide shadow-md transition cursor-pointer"
                   >
-                    <HelpCircle className="w-3.5 h-3.5" />
-                    <span>Lupa Kata Sandi?</span>
+                    {isLoggingIn ? 'MEMVERIFIKASI AKUN SUPABASE...' : 'MASUK KE DASHBOARD SIAGA'}
                   </button>
-                </div>
-
-                {showForgotHelp && (
-                  <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-3.5 text-xs text-emerald-950">
-                    Untuk reset kata sandi ASN, hubungi Admin Sekretariat BPBD Kabupaten Sidoarjo (Subbag Umum &amp; Kepegawaian) atau gunakan Super Admin pada modul manajemen pengguna.
-                  </div>
-                )}
-
-                <button
-                  type="submit"
-                  disabled={remainingLockSeconds > 0}
-                  className="w-full py-3.5 px-4 rounded-xl bg-gradient-to-r from-[#065F46] via-[#047857] to-[#033A2C] hover:opacity-95 disabled:opacity-50 text-white text-sm font-bold tracking-wide shadow-md transition cursor-pointer"
-                >
-                  MASUK KE DASHBOARD SIAGA
-                </button>
-              </form>
+                </form>
+              )}
 
               <p className="text-[11px] text-slate-400 text-center leading-relaxed pt-2 border-t border-slate-100">
-                Akses resmi ASN &amp; Pegawai BPBD Kabupaten Sidoarjo. Aktivitas login dan perubahan agenda tercatat dalam Audit Log.
+                Akses resmi ASN &amp; Pegawai BPBD Kabupaten Sidoarjo. Data akun &amp; jadwal terhubung langsung ke Supabase.
               </p>
             </div>
           </section>
@@ -1793,7 +2077,10 @@ export default function App() {
               </div>
               <button
                 type="button"
-                onClick={() => void loadAgendasFromDb(false)}
+                onClick={() => {
+                  void loadUsersFromDb(false);
+                  void loadAgendasFromDb(false);
+                }}
                 className="px-3 py-1.5 rounded-lg bg-amber-700 hover:bg-amber-800 text-white font-bold text-xs cursor-pointer"
               >
                 Coba Hubungkan Ulang
@@ -2322,9 +2609,11 @@ export default function App() {
                                         setFocusedAgenda({ ...focusedAgenda, ilustrasi: nextVal });
                                       }
                                       try {
-                                        await updateAgendaInSupabase(item.id, {
-                                          ilustrasi: nextVal,
-                                        });
+                                        await updateAgendaInSupabase(
+                                          item.id,
+                                          { ilustrasi: nextVal },
+                                          item
+                                        );
                                       } catch (err) {
                                         const msg =
                                           err instanceof Error
@@ -2420,7 +2709,16 @@ export default function App() {
 
                 {perms.canManageUsers && adminTab === 'users' ? (
                   <div className="space-y-4">
-                    <div className="flex justify-end">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void loadUsersFromDb(false)}
+                        disabled={isLoadingUsers}
+                        className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 disabled:opacity-60"
+                      >
+                        <Database className="w-3.5 h-3.5 text-emerald-700" />
+                        <span>{isLoadingUsers ? 'Memuat Supabase...' : 'Segarkan dari Supabase'}</span>
+                      </button>
                       <button
                         type="button"
                         onClick={() => openUserModal()}
@@ -2431,66 +2729,76 @@ export default function App() {
                       </button>
                     </div>
 
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
-                      {users.map((u) => (
-                        <div
-                          key={u.id}
-                          className="rounded-xl border border-slate-200 p-4 flex flex-col justify-between gap-3 bg-white"
-                        >
-                          <div className="space-y-1">
-                            <div className="flex items-center justify-between gap-2">
-                              <span className="text-xs font-bold px-2 py-0.5 rounded bg-emerald-50 text-emerald-800">
-                                {ROLE_META[u.roleKode].shortLabel}
-                              </span>
-                              <span
-                                className={`text-[11px] font-bold px-2 py-0.5 rounded ${
-                                  u.isActive
-                                    ? 'bg-emerald-50 text-emerald-700'
-                                    : 'bg-rose-50 text-rose-700'
-                                }`}
-                              >
-                                {u.isActive ? 'Aktif' : 'Nonaktif'}
-                              </span>
+                    {isLoadingUsers && users.length === 0 ? (
+                      <div className="rounded-xl border border-emerald-200 bg-emerald-50/40 p-6 text-center text-xs font-semibold text-emerald-800">
+                        Mengambil data Akun ASN langsung dari tabel akun_asn di Supabase...
+                      </div>
+                    ) : users.length === 0 ? (
+                      <div className="rounded-xl border border-slate-200 bg-slate-50 p-6 text-center text-xs text-slate-600">
+                        Belum ada data di tabel <code className="font-mono font-bold">akun_asn</code>. Klik <strong>Tambah Akun ASN</strong> untuk menyimpan akun ke Supabase.
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                        {users.map((u) => (
+                          <div
+                            key={u.id}
+                            className="rounded-xl border border-slate-200 p-4 flex flex-col justify-between gap-3 bg-white"
+                          >
+                            <div className="space-y-1">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-xs font-bold px-2 py-0.5 rounded bg-emerald-50 text-emerald-800">
+                                  {ROLE_META[u.roleKode].shortLabel}
+                                </span>
+                                <span
+                                  className={`text-[11px] font-bold px-2 py-0.5 rounded ${
+                                    u.isActive
+                                      ? 'bg-emerald-50 text-emerald-700'
+                                      : 'bg-rose-50 text-rose-700'
+                                  }`}
+                                >
+                                  {u.isActive ? 'Aktif' : 'Nonaktif'}
+                                </span>
+                              </div>
+                              <h4 className="text-sm font-bold text-slate-900 pt-1">
+                                {u.namaLengkap}
+                              </h4>
+                              <p className="text-xs text-slate-600">
+                                {u.jabatan || '-'} &middot; {u.bidang}
+                              </p>
+                              <p className="font-mono text-[11px] text-slate-500">
+                                NIP: {u.nip} &middot; User: {u.username}
+                              </p>
                             </div>
-                            <h4 className="text-sm font-bold text-slate-900 pt-1">
-                              {u.namaLengkap}
-                            </h4>
-                            <p className="text-xs text-slate-600">
-                              {u.jabatan} &middot; {u.bidang}
-                            </p>
-                            <p className="font-mono text-[11px] text-slate-500">
-                              NIP: {u.nip} &middot; User: {u.username}
-                            </p>
-                          </div>
 
-                          <div className="flex flex-wrap items-center justify-end gap-1.5 pt-2 border-t border-slate-100">
-                            <button
-                              type="button"
-                              onClick={() => openUserModal(u)}
-                              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-xs font-semibold text-slate-700"
-                            >
-                              <Edit3 className="w-3.5 h-3.5 text-emerald-700" />
-                              Edit
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleToggleUserActive(u)}
-                              className="px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-xs font-semibold text-slate-700"
-                            >
-                              {u.isActive ? 'Nonaktifkan' : 'Aktifkan'}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleRequestDeleteUser(u)}
-                              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-rose-200 bg-rose-50 hover:bg-rose-100 text-xs font-semibold text-rose-700"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                              Hapus
-                            </button>
+                            <div className="flex flex-wrap items-center justify-end gap-1.5 pt-2 border-t border-slate-100">
+                              <button
+                                type="button"
+                                onClick={() => openUserModal(u)}
+                                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-xs font-semibold text-slate-700"
+                              >
+                                <Edit3 className="w-3.5 h-3.5 text-emerald-700" />
+                                Edit
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void handleToggleUserActive(u)}
+                                className="px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-xs font-semibold text-slate-700"
+                              >
+                                {u.isActive ? 'Nonaktifkan' : 'Aktifkan'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleRequestDeleteUser(u)}
+                                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-rose-200 bg-rose-50 hover:bg-rose-100 text-xs font-semibold text-rose-700"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                                Hapus
+                              </button>
+                            </div>
                           </div>
-                        </div>
-                      ))}
-                    </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div className="space-y-4">
@@ -3084,7 +3392,9 @@ export default function App() {
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">Bidang</label>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    Unit Kerja / Bidang
+                  </label>
                   <input
                     type="text"
                     value={userForm.bidang}
@@ -3110,29 +3420,34 @@ export default function App() {
                   </select>
                 </div>
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">Kata Sandi *</label>
-                  <input
-                    type="text"
-                    required
-                    value={userForm.password}
-                    onChange={(e) => setUserForm({ ...userForm, password: e.target.value })}
-                    className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm font-mono"
-                  />
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Status Akun</label>
+                  <select
+                    value={userForm.isActive ? 'Aktif' : 'Nonaktif'}
+                    onChange={(e) =>
+                      setUserForm({ ...userForm, isActive: e.target.value === 'Aktif' })
+                    }
+                    className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm bg-white"
+                  >
+                    <option value="Aktif">Aktif</option>
+                    <option value="Nonaktif">Nonaktif</option>
+                  </select>
                 </div>
               </div>
               <div className="flex justify-end gap-2 pt-2">
                 <button
                   type="button"
+                  disabled={isSavingUser}
                   onClick={() => setUserModalOpen(false)}
-                  className="px-4 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-700"
+                  className="px-4 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-700 disabled:opacity-50"
                 >
                   Batal
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 rounded-xl bg-[#064E3B] hover:bg-[#065F46] text-white text-xs font-bold"
+                  disabled={isSavingUser}
+                  className="px-4 py-2 rounded-xl bg-[#064E3B] hover:bg-[#065F46] text-white text-xs font-bold disabled:opacity-60"
                 >
-                  Simpan Akun
+                  {isSavingUser ? 'Menyimpan ke Supabase...' : 'Simpan Akun'}
                 </button>
               </div>
             </form>
@@ -3221,15 +3536,20 @@ export default function App() {
                               type="button"
                               onClick={async () => {
                                 try {
-                                  const updated = await updateAgendaInSupabase(item.id, {
-                                    jamMulai: nextSlot.jamMulai,
-                                    jamSelesai: nextSlot.jamSelesai,
-                                    sampaiSelesai: false,
-                                    isUpdated: true,
-                                  });
-                                  setAgendas((prev) =>
-                                    prev.map((a) => (a.id === item.id ? updated : a))
+                                  const updated = await updateAgendaInSupabase(
+                                    item.id,
+                                    {
+                                      jamMulai: nextSlot.jamMulai,
+                                      jamSelesai: nextSlot.jamSelesai,
+                                      sampaiSelesai: false,
+                                      isUpdated: true,
+                                    },
+                                    item
                                   );
+                                  await loadAgendasFromDb(true);
+                                  if (focusedAgenda?.id === updated.id) {
+                                    setFocusedAgenda(updated);
+                                  }
                                   appendAudit(
                                     'GESER_JADWAL',
                                     'SUKSES',
