@@ -1863,19 +1863,19 @@ export default function App() {
                 BPBD Sidoarjo
               </h1>
               <p className="text-sm sm:text-base text-emerald-50/85 leading-relaxed max-w-xl font-normal">
-                Platform digital resmi Sekretariat BPBD Kabupaten Sidoarjo untuk pencatatan agenda kegiatan, ekstraksi surat e-Buddy, rekapitulasi jadwal PDF/Excel, hingga publikasi poster WhatsApp real-time.
+                Selamat datang di SIAGA AGENDA, platform digital resmi Sekretariat BPBD Kabupaten Sidoarjo. Sistem ini hadir untuk mengintegrasikan pencatatan agenda kegiatan secara cepat, mempermudah monitoring jadwal secara real-time, hingga menghasilkan rekapitulasi laporan (PDF/Excel) dan poster informasi agenda kegiatan yang bisa share ke whatsapp. Dilengkapi fitur pengingat jadwal yang siap dibagikan langsung ke WhatsApp pimpinan guna memastikan koordinasi kedinasan berjalan lebih responsif, akurat, dan terukur.
               </p>
             </div>
 
-            {/* Clean Smart-ASN Style Feature Pills */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 max-w-xl">
+            {/* Clean Smart-ASN Style Feature Cards */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-xl">
               <div className="rounded-2xl bg-white/10 backdrop-blur-sm border border-white/15 px-3.5 py-3 flex items-center gap-2.5">
                 <div className="w-8 h-8 rounded-xl bg-emerald-400/20 text-emerald-300 flex items-center justify-center shrink-0">
-                  <ClipboardPaste className="w-4 h-4" />
+                  <Calendar className="w-4 h-4" />
                 </div>
                 <div className="min-w-0">
-                  <p className="text-xs font-bold text-white truncate">Input e-Buddy</p>
-                  <p className="text-[11px] text-emerald-100/75 truncate">Ekstrak surat cepat</p>
+                  <p className="text-xs font-bold text-white truncate">Agenda Real-Time</p>
+                  <p className="text-[11px] text-emerald-100/75 truncate">Catat &amp; pantau jadwal</p>
                 </div>
               </div>
               <div className="rounded-2xl bg-white/10 backdrop-blur-sm border border-white/15 px-3.5 py-3 flex items-center gap-2.5">
@@ -1883,17 +1883,26 @@ export default function App() {
                   <FileText className="w-4 h-4" />
                 </div>
                 <div className="min-w-0">
-                  <p className="text-xs font-bold text-white truncate">Rekap Lengkap</p>
+                  <p className="text-xs font-bold text-white truncate">Rekap Laporan</p>
                   <p className="text-[11px] text-emerald-100/75 truncate">Ekspor PDF &amp; Excel</p>
                 </div>
               </div>
               <div className="rounded-2xl bg-white/10 backdrop-blur-sm border border-white/15 px-3.5 py-3 flex items-center gap-2.5">
                 <div className="w-8 h-8 rounded-xl bg-sky-400/20 text-sky-300 flex items-center justify-center shrink-0">
-                  <Share2 className="w-4 h-4" />
+                  <ImageIcon className="w-4 h-4" />
                 </div>
                 <div className="min-w-0">
-                  <p className="text-xs font-bold text-white truncate">Poster WA</p>
-                  <p className="text-[11px] text-emerald-100/75 truncate">Unduh PNG / JPG</p>
+                  <p className="text-xs font-bold text-white truncate">Poster WhatsApp</p>
+                  <p className="text-[11px] text-emerald-100/75 truncate">Siap bagikan ke WA</p>
+                </div>
+              </div>
+              <div className="rounded-2xl bg-white/10 backdrop-blur-sm border border-white/15 px-3.5 py-3 flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-green-400/20 text-green-300 flex items-center justify-center shrink-0">
+                  <BellRing className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-xs font-bold text-white truncate">Pengingat Pimpinan</p>
+                  <p className="text-[11px] text-emerald-100/75 truncate">Kirim langsung ke WA</p>
                 </div>
               </div>
             </div>
