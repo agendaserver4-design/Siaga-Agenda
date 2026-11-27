@@ -27,6 +27,7 @@ import {
   Share2,
   ShieldCheck,
   Sparkles,
+  Star,
   Trash2,
   Upload,
   UserPlus,
@@ -45,17 +46,22 @@ import {
 import { playReminderChime, unlockAudioPermission } from './soundAlert';
 import {
   deleteAgendaFromSupabase,
+  deleteKontakAtasanFromSupabase,
   deleteUserFromSupabase,
   fetchAgendasFromSupabase,
   fetchConflictsFromSupabase,
+  fetchKontakAtasanFromSupabase,
   fetchUsersFromSupabase,
   generateAgendaUuid,
   insertAgendaToSupabase,
+  insertKontakAtasanToSupabase,
   insertUserToSupabase,
   isSupabaseConfigured,
   normalizeRoleCode,
   sanitizeZoomUrl,
+  setDefaultKontakAtasanInSupabase,
   subscribeAgendasRealtime,
+  subscribeKontakAtasanRealtime,
   subscribeUsersRealtime,
   syncImportedAgendasToSupabase,
   syncImportedUsersToSupabase,
@@ -74,6 +80,7 @@ import {
   CATEGORIES,
   CardMode,
   CardTheme,
+  KontakAtasanItem,
   LOCKOUT_DURATION_MS,
   LOCKOUT_STORAGE_KEY,
   MASTER_STORAGE_KEY,
@@ -166,6 +173,9 @@ interface AgendaFormState {
   isUpdated: boolean;
   zoomUrl: string;
   noWaAtasan: string;
+  waMode: 'list' | 'manual';
+  saveManualWaToContacts: boolean;
+  manualWaNamaJabatan: string;
   sudahDiingatkan: boolean;
   ilustrasi: PosterIllustrationKey;
   catatan: string;
@@ -212,6 +222,16 @@ export default function App() {
   const [agendas, setAgendas] = useState<AgendaItem[]>([]);
   const [isLoadingAgendas, setIsLoadingAgendas] = useState<boolean>(isSupabaseConfigured);
   const [isSavingAgenda, setIsSavingAgenda] = useState<boolean>(false);
+
+  const [kontakAtasanList, setKontakAtasanList] = useState<KontakAtasanItem[]>([]);
+  const [kontakModalOpen, setKontakModalOpen] = useState(false);
+  const [kontakForm, setKontakForm] = useState({
+    namaJabatan: '',
+    noWa: '',
+    isDefault: false,
+  });
+  const [isSavingKontak, setIsSavingKontak] = useState(false);
+
   const [supabaseError, setSupabaseError] = useState<string>(() =>
     isSupabaseConfigured
       ? ''
@@ -314,20 +334,35 @@ export default function App() {
     }
   }, []);
 
+  const loadKontakAtasanFromDb = useCallback(async () => {
+    if (!isSupabaseConfigured) return;
+    try {
+      const rows = await fetchKontakAtasanFromSupabase();
+      setKontakAtasanList(rows);
+    } catch {
+      // Keep UI usable even if kontak_atasan cannot be loaded yet
+    }
+  }, []);
+
   useEffect(() => {
     void loadUsersFromDb(false);
     void loadAgendasFromDb(false);
+    void loadKontakAtasanFromDb();
     const unsubUsers = subscribeUsersRealtime(() => {
       void loadUsersFromDb(true);
     });
     const unsubAgendas = subscribeAgendasRealtime(() => {
       void loadAgendasFromDb(true);
     });
+    const unsubKontak = subscribeKontakAtasanRealtime(() => {
+      void loadKontakAtasanFromDb();
+    });
     return () => {
       unsubUsers();
       unsubAgendas();
+      unsubKontak();
     };
-  }, [loadUsersFromDb, loadAgendasFromDb]);
+  }, [loadUsersFromDb, loadAgendasFromDb, loadKontakAtasanFromDb]);
 
   useEffect(() => {
     localStorage.setItem(MASTER_STORAGE_KEY, JSON.stringify(masterUnits));
@@ -816,11 +851,39 @@ export default function App() {
   // =========================================================================
   // AGENDA CRUD HANDLERS
   // =========================================================================
+  const findMatchingKontak = useCallback(
+    (rawWa: string) => {
+      const normalized = formatWhatsAppNumber(rawWa);
+      if (!normalized) return undefined;
+      return kontakAtasanList.find((k) => formatWhatsAppNumber(k.noWa) === normalized);
+    },
+    [kontakAtasanList]
+  );
+
   const openNewAgendaModal = (preset?: Partial<AgendaItem>) => {
     if (!perms.canCreateAgenda) {
       notify('Peran Anda tidak memiliki izin menambah agenda.', 'warning');
       return;
     }
+    const presetWa = (preset?.noWaAtasan || '').trim();
+    const defaultKontak = kontakAtasanList.find((k) => k.isDefault);
+    let initialWa = '';
+    let initialWaMode: 'list' | 'manual' = 'list';
+
+    if (presetWa) {
+      const matched = findMatchingKontak(presetWa);
+      if (matched) {
+        initialWa = formatWhatsAppNumber(matched.noWa);
+        initialWaMode = 'list';
+      } else {
+        initialWa = presetWa;
+        initialWaMode = 'manual';
+      }
+    } else if (defaultKontak) {
+      initialWa = formatWhatsAppNumber(defaultKontak.noWa);
+      initialWaMode = 'list';
+    }
+
     setAgendaForm({
       judul: preset?.judul || '',
       tanggal: preset?.tanggal || selectedDate,
@@ -838,7 +901,10 @@ export default function App() {
       isConfidential: Boolean(preset?.isConfidential),
       isUpdated: Boolean(preset?.isUpdated ?? true),
       zoomUrl: preset?.zoomUrl || '',
-      noWaAtasan: preset?.noWaAtasan || '',
+      noWaAtasan: initialWa,
+      waMode: initialWaMode,
+      saveManualWaToContacts: false,
+      manualWaNamaJabatan: '',
       sudahDiingatkan: Boolean(preset?.sudahDiingatkan),
       ilustrasi: preset?.ilustrasi || 'auto',
       catatan: preset?.catatan || '',
@@ -852,6 +918,11 @@ export default function App() {
       notify('Peran Anda tidak memiliki izin mengubah agenda.', 'warning');
       return;
     }
+    const rawWa = (item.noWaAtasan || '').trim();
+    const matched = rawWa ? findMatchingKontak(rawWa) : undefined;
+    const initialWa = matched ? formatWhatsAppNumber(matched.noWa) : rawWa;
+    const initialWaMode: 'list' | 'manual' = rawWa && !matched ? 'manual' : 'list';
+
     setAgendaForm({
       id: item.id,
       judul: item.judul,
@@ -870,7 +941,10 @@ export default function App() {
       isConfidential: item.isConfidential,
       isUpdated: Boolean(item.isUpdated),
       zoomUrl: item.zoomUrl || '',
-      noWaAtasan: item.noWaAtasan || '',
+      noWaAtasan: initialWa,
+      waMode: initialWaMode,
+      saveManualWaToContacts: false,
+      manualWaNamaJabatan: '',
       sudahDiingatkan: Boolean(item.sudahDiingatkan),
       ilustrasi: item.ilustrasi || 'auto',
       catatan: item.catatan,
@@ -927,6 +1001,33 @@ export default function App() {
 
     setIsSavingAgenda(true);
     try {
+      const normalizedWa = formatWhatsAppNumber(agendaForm.noWaAtasan);
+
+      if (
+        agendaForm.waMode === 'manual' &&
+        agendaForm.saveManualWaToContacts &&
+        normalizedWa &&
+        !findMatchingKontak(normalizedWa)
+      ) {
+        try {
+          await insertKontakAtasanToSupabase({
+            namaJabatan:
+              agendaForm.manualWaNamaJabatan.trim() ||
+              agendaForm.pejabatPendamping.trim() ||
+              'Atasan / Pimpinan',
+            noWa: normalizedWa,
+            isDefault: kontakAtasanList.length === 0,
+          });
+          await loadKontakAtasanFromDb();
+        } catch (kontakErr) {
+          const kontakMsg =
+            kontakErr instanceof Error
+              ? kontakErr.message
+              : 'Gagal menyimpan nomor baru ke tabel kontak_atasan.';
+          notify(kontakMsg, 'warning');
+        }
+      }
+
       const dbConflicts = await fetchConflictsFromSupabase({
         id: agendaForm.id,
         tanggal: agendaForm.tanggal,
@@ -945,7 +1046,7 @@ export default function App() {
             judul: agendaForm.judul.trim(),
             lokasi: agendaForm.lokasi.trim() || 'Menunggu konfirmasi',
             zoomUrl: sanitizeZoomUrl(agendaForm.zoomUrl),
-            noWaAtasan: agendaForm.noWaAtasan.trim(),
+            noWaAtasan: normalizedWa,
             sudahDiingatkan: agendaForm.sudahDiingatkan,
           },
           existingItem
@@ -972,7 +1073,7 @@ export default function App() {
           judul: agendaForm.judul.trim(),
           lokasi: agendaForm.lokasi.trim() || 'Menunggu konfirmasi',
           zoomUrl: sanitizeZoomUrl(agendaForm.zoomUrl),
-          noWaAtasan: agendaForm.noWaAtasan.trim(),
+          noWaAtasan: normalizedWa,
           sudahDiingatkan: agendaForm.sudahDiingatkan,
           createdBy: currentUser?.namaLengkap || 'Operator',
           createdAt: new Date().toISOString(),
@@ -1000,6 +1101,78 @@ export default function App() {
       notify(`Gagal menyimpan ke Supabase: ${msg}`, 'warning');
     } finally {
       setIsSavingAgenda(false);
+    }
+  };
+
+  const handleAddKontakAtasan = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isSavingKontak) return;
+    const normalizedWa = formatWhatsAppNumber(kontakForm.noWa);
+    if (!kontakForm.namaJabatan.trim() || !normalizedWa) {
+      notify('Nama jabatan dan nomor WhatsApp atasan wajib diisi.', 'warning');
+      return;
+    }
+    setIsSavingKontak(true);
+    try {
+      const saved = await insertKontakAtasanToSupabase({
+        namaJabatan: kontakForm.namaJabatan.trim(),
+        noWa: normalizedWa,
+        isDefault: kontakForm.isDefault,
+      });
+      await loadKontakAtasanFromDb();
+      setKontakForm({ namaJabatan: '', noWa: '', isDefault: false });
+      if (agendaForm && (saved.isDefault || !agendaForm.noWaAtasan)) {
+        setAgendaForm((prev) =>
+          prev
+            ? {
+                ...prev,
+                noWaAtasan: saved.noWa,
+                waMode: 'list',
+                saveManualWaToContacts: false,
+              }
+            : prev
+        );
+      }
+      notify(`Kontak "${saved.namaJabatan}" tersimpan di Supabase.`, 'success');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Gagal menyimpan kontak atasan.';
+      notify(msg, 'warning');
+    } finally {
+      setIsSavingKontak(false);
+    }
+  };
+
+  const handleSetDefaultKontakAtasan = async (kontak: KontakAtasanItem) => {
+    try {
+      await setDefaultKontakAtasanInSupabase(kontak.id);
+      await loadKontakAtasanFromDb();
+      if (agendaForm && !agendaForm.id && !agendaForm.noWaAtasan) {
+        setAgendaForm((prev) =>
+          prev ? { ...prev, noWaAtasan: kontak.noWa, waMode: 'list' } : prev
+        );
+      }
+      notify(`"${kontak.namaJabatan}" dijadikan nomor utama (default).`, 'success');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Gagal mengubah kontak utama.';
+      notify(msg, 'warning');
+    }
+  };
+
+  const handleDeleteKontakAtasan = async (kontak: KontakAtasanItem) => {
+    try {
+      await deleteKontakAtasanFromSupabase(kontak.id);
+      await loadKontakAtasanFromDb();
+      if (
+        agendaForm &&
+        agendaForm.waMode === 'list' &&
+        formatWhatsAppNumber(agendaForm.noWaAtasan) === formatWhatsAppNumber(kontak.noWa)
+      ) {
+        setAgendaForm((prev) => (prev ? { ...prev, noWaAtasan: '', waMode: 'list' } : prev));
+      }
+      notify(`Kontak "${kontak.namaJabatan}" dihapus.`, 'info');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Gagal menghapus kontak atasan.';
+      notify(msg, 'warning');
     }
   };
 
@@ -3336,23 +3509,115 @@ export default function App() {
                 </select>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 gap-3">
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">
-                    Nomor WhatsApp Atasan (Opsional)
-                  </label>
-                  <input
-                    type="tel"
-                    inputMode="numeric"
-                    value={agendaForm.noWaAtasan}
-                    onChange={(e) => setAgendaForm({ ...agendaForm, noWaAtasan: e.target.value })}
-                    placeholder="Contoh: 6281234567890"
-                    className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm font-mono"
-                  />
-                  <p className="text-[11px] text-slate-500 mt-1">
-                    Format internasional tanpa + (contoh: 6281234567890). Awalan 08 otomatis diubah ke 628.
-                  </p>
+                  <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
+                    <label className="block text-xs font-bold text-slate-700">
+                      Nomor WhatsApp Atasan (Opsional)
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setKontakModalOpen(true)}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-[11px] font-bold text-emerald-800 transition cursor-pointer"
+                    >
+                      <span>+ Tambah / Kelola Nomor Atasan</span>
+                    </button>
+                  </div>
+
+                  <select
+                    value={
+                      agendaForm.waMode === 'manual'
+                        ? '__MANUAL__'
+                        : formatWhatsAppNumber(agendaForm.noWaAtasan)
+                    }
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (val === '__MANUAL__') {
+                        setAgendaForm({
+                          ...agendaForm,
+                          waMode: 'manual',
+                          noWaAtasan:
+                            agendaForm.waMode === 'manual' ? agendaForm.noWaAtasan : '',
+                          saveManualWaToContacts: false,
+                        });
+                      } else {
+                        setAgendaForm({
+                          ...agendaForm,
+                          waMode: 'list',
+                          noWaAtasan: val,
+                          saveManualWaToContacts: false,
+                          manualWaNamaJabatan: '',
+                        });
+                      }
+                    }}
+                    className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm bg-white"
+                  >
+                    <option value="">-- Tidak Perlu / Pilih Kontak Atasan --</option>
+                    {kontakAtasanList.map((k) => {
+                      const waNum = formatWhatsAppNumber(k.noWa);
+                      return (
+                        <option key={k.id} value={waNum}>
+                          {k.namaJabatan} - {waNum}
+                          {k.isDefault ? ' (Utama)' : ''}
+                        </option>
+                      );
+                    })}
+                    <option value="__MANUAL__">Input Manual (Nomor di luar daftar)</option>
+                  </select>
+
+                  {agendaForm.waMode === 'manual' && (
+                    <div className="mt-2.5 p-3 rounded-xl border border-emerald-200 bg-emerald-50/45 space-y-2.5">
+                      <div>
+                        <input
+                          type="tel"
+                          inputMode="numeric"
+                          value={agendaForm.noWaAtasan}
+                          onChange={(e) =>
+                            setAgendaForm({ ...agendaForm, noWaAtasan: e.target.value })
+                          }
+                          placeholder="Ketik nomor WA atasan, contoh: 6281234567890"
+                          className="w-full px-3 py-2 rounded-lg border border-slate-300 bg-white text-sm font-mono"
+                        />
+                        <p className="text-[11px] text-slate-500 mt-1">
+                          Format internasional tanpa + (contoh: 6281234567890). Awalan 08 otomatis diubah ke 628.
+                        </p>
+                      </div>
+
+                      <label className="inline-flex items-center gap-2 text-xs font-semibold text-emerald-900 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={agendaForm.saveManualWaToContacts}
+                          onChange={(e) =>
+                            setAgendaForm({
+                              ...agendaForm,
+                              saveManualWaToContacts: e.target.checked,
+                            })
+                          }
+                          className="w-4 h-4 rounded border-emerald-400 text-emerald-700"
+                        />
+                        <span>Simpan nomor ini ke daftar kontak atasan</span>
+                      </label>
+
+                      {agendaForm.saveManualWaToContacts && (
+                        <div>
+                          <input
+                            type="text"
+                            value={agendaForm.manualWaNamaJabatan}
+                            onChange={(e) =>
+                              setAgendaForm({
+                                ...agendaForm,
+                                manualWaNamaJabatan: e.target.value,
+                              })
+                            }
+                            placeholder="Nama / Jabatan Atasan (contoh: Kepala Dinas / Kalaksa)"
+                            className="w-full px-3 py-1.5 rounded-lg border border-emerald-200 bg-white text-xs"
+                          />
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
+
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1">
                     Tautan Zoom / Rapat Daring (Opsional)
@@ -3878,6 +4143,171 @@ export default function App() {
                   <span>Kirim Pengingat WA ke Atasan Sekarang</span>
                 </a>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: KELOLA KONTAK WHATSAPP ATASAN (SUPABASE: kontak_atasan) */}
+      {kontakModalOpen && (
+        <div
+          className="fixed inset-0 z-[75] bg-slate-950/65 flex items-center justify-center p-4"
+          onClick={() => setKontakModalOpen(false)}
+        >
+          <div
+            className="w-full max-w-md max-h-[85vh] rounded-2xl bg-white shadow-2xl border border-emerald-200 flex flex-col overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-5 py-3.5 bg-gradient-to-r from-[#03241A] via-[#064E3B] to-[#047857] text-white flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <h3 className="text-sm sm:text-base font-extrabold truncate">
+                  Kelola Nomor WhatsApp Atasan
+                </h3>
+                <p className="text-[11px] text-emerald-100 truncate">
+                  Tersimpan di tabel kontak_atasan Supabase
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setKontakModalOpen(false)}
+                className="p-1.5 rounded-lg text-emerald-100 hover:bg-white/10 hover:text-white shrink-0"
+                aria-label="Tutup kelola kontak atasan"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4">
+              <form
+                onSubmit={handleAddKontakAtasan}
+                className="rounded-xl border border-emerald-200 bg-emerald-50/45 p-3.5 space-y-2.5"
+              >
+                <p className="text-xs font-extrabold text-emerald-950">
+                  + Tambah Nomor Atasan Baru
+                </p>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                    Nama / Jabatan Atasan *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={kontakForm.namaJabatan}
+                    onChange={(e) =>
+                      setKontakForm({ ...kontakForm, namaJabatan: e.target.value })
+                    }
+                    placeholder="Contoh: Kepala Dinas / Kalaksa"
+                    className="w-full px-3 py-2 rounded-lg border border-slate-300 bg-white text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                    Nomor WhatsApp *
+                  </label>
+                  <input
+                    type="tel"
+                    inputMode="numeric"
+                    required
+                    value={kontakForm.noWa}
+                    onChange={(e) => setKontakForm({ ...kontakForm, noWa: e.target.value })}
+                    placeholder="Contoh: 6281234567890"
+                    className="w-full px-3 py-2 rounded-lg border border-slate-300 bg-white text-xs font-mono"
+                  />
+                </div>
+                <label className="inline-flex items-center gap-2 text-xs font-semibold text-slate-700 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={kontakForm.isDefault}
+                    onChange={(e) =>
+                      setKontakForm({ ...kontakForm, isDefault: e.target.checked })
+                    }
+                    className="w-4 h-4 rounded border-slate-300"
+                  />
+                  <span>Jadikan nomor utama (otomatis terpilih saat tambah agenda)</span>
+                </label>
+                <div className="flex justify-end pt-1">
+                  <button
+                    type="submit"
+                    disabled={isSavingKontak}
+                    className="px-3.5 py-2 rounded-lg bg-[#064E3B] hover:bg-[#065F46] text-white text-xs font-bold disabled:opacity-60 cursor-pointer"
+                  >
+                    {isSavingKontak ? 'Menyimpan...' : 'Simpan Kontak'}
+                  </button>
+                </div>
+              </form>
+
+              <div className="space-y-2">
+                <p className="text-xs font-bold text-slate-700">
+                  Daftar Kontak Atasan ({kontakAtasanList.length})
+                </p>
+                {kontakAtasanList.length === 0 ? (
+                  <p className="text-xs text-slate-500 text-center py-4 border border-dashed border-slate-200 rounded-xl">
+                    Belum ada daftar nomor atasan tersimpan.
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {kontakAtasanList.map((k) => (
+                      <div
+                        key={k.id}
+                        className={`rounded-xl border p-3 flex items-center justify-between gap-2 ${
+                          k.isDefault
+                            ? 'border-amber-300 bg-amber-50/55'
+                            : 'border-slate-200 bg-white'
+                        }`}
+                      >
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <p className="text-xs font-extrabold text-slate-900 truncate">
+                              {k.namaJabatan}
+                            </p>
+                            {k.isDefault && (
+                              <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-amber-100 border border-amber-300 text-[10px] font-extrabold text-amber-800">
+                                <Star className="w-2.5 h-2.5 fill-amber-500 text-amber-600" />
+                                Utama
+                              </span>
+                            )}
+                          </div>
+                          <p className="font-mono text-[11px] text-slate-600 mt-0.5">
+                            {k.noWa}
+                          </p>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          {!k.isDefault && (
+                            <button
+                              type="button"
+                              onClick={() => handleSetDefaultKontakAtasan(k)}
+                              className="px-2 py-1 rounded-lg border border-amber-300 bg-amber-50 hover:bg-amber-100 text-[11px] font-bold text-amber-800 cursor-pointer"
+                              title="Jadikan nomor utama"
+                            >
+                              Set Utama
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteKontakAtasan(k)}
+                            className="p-1.5 rounded-lg border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 cursor-pointer"
+                            title="Hapus kontak"
+                            aria-label={`Hapus ${k.namaJabatan}`}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="px-5 py-3 border-t border-slate-200 bg-slate-50 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setKontakModalOpen(false)}
+                className="px-4 py-2 rounded-xl bg-[#064E3B] hover:bg-[#065F46] text-white text-xs font-bold cursor-pointer"
+              >
+                Selesai
+              </button>
             </div>
           </div>
         </div>

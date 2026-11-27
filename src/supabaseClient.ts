@@ -5,12 +5,14 @@ import {
   AgendaStatus,
   CATEGORIES,
   ConflictInfo,
+  KontakAtasanItem,
   POSTER_ILLUSTRATION_OPTIONS,
   PosterIllustrationKey,
   ROLE_META,
   RoleCode,
   UserAccount,
   formatRentangWaktu,
+  formatWhatsAppNumber,
   getConflictsForCandidate,
   minutesToTime,
   timeToMinutes,
@@ -700,3 +702,149 @@ export function subscribeUsersRealtime(onChange: () => void): () => void {
     supabase.removeChannel(channel);
   };
 }
+
+// =========================================================================
+// TABEL `kontak_atasan` (id, nama_jabatan, no_wa, is_default)
+// =========================================================================
+const KONTAK_ATASAN_SELECT_COLUMNS = 'id, nama_jabatan, no_wa, is_default';
+
+function isMissingKontakTableError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const e = err as { code?: string; message?: string; details?: string };
+  const text = `${e.message || ''} ${e.details || ''}`.toLowerCase();
+  return (
+    e.code === '42P01' ||
+    e.code === 'PGRST205' ||
+    (text.includes('kontak_atasan') &&
+      (text.includes('does not exist') || text.includes('could not find the table')))
+  );
+}
+
+export function mapKontakAtasanRowFromDb(row: Record<string, unknown>): KontakAtasanItem {
+  return {
+    id: String(row.id || generateAgendaUuid()),
+    namaJabatan: String(row.nama_jabatan ?? '').trim() || 'Atasan / Pimpinan',
+    noWa: formatWhatsAppNumber(String(row.no_wa ?? '')),
+    isDefault: Boolean(row.is_default),
+  };
+}
+
+export async function fetchKontakAtasanFromSupabase(): Promise<KontakAtasanItem[]> {
+  const client = assertClient();
+  const { data, error } = await client
+    .from('kontak_atasan')
+    .select(KONTAK_ATASAN_SELECT_COLUMNS)
+    .order('is_default', { ascending: false })
+    .order('nama_jabatan', { ascending: true });
+
+  if (error && isMissingKontakTableError(error)) {
+    return [];
+  }
+  if (error) {
+    throw new Error(formatSupabaseError(error));
+  }
+  return (data || []).map((row) => mapKontakAtasanRowFromDb(row as Record<string, unknown>));
+}
+
+export async function insertKontakAtasanToSupabase(input: {
+  namaJabatan: string;
+  noWa: string;
+  isDefault: boolean;
+}): Promise<KontakAtasanItem> {
+  const client = assertClient();
+  const normalizedWa = formatWhatsAppNumber(input.noWa);
+  if (!normalizedWa) {
+    throw new Error('Nomor WhatsApp atasan tidak valid.');
+  }
+
+  if (input.isDefault) {
+    const { error: resetErr } = await client
+      .from('kontak_atasan')
+      .update({ is_default: false })
+      .eq('is_default', true);
+    if (resetErr && isMissingKontakTableError(resetErr)) {
+      throw new Error(
+        'Tabel kontak_atasan belum dibuat di Supabase. Jalankan SQL CREATE TABLE kontak_atasan terlebih dahulu.'
+      );
+    }
+    if (resetErr) {
+      throw new Error(formatSupabaseError(resetErr));
+    }
+  }
+
+  const baseFields = {
+    nama_jabatan: input.namaJabatan.trim() || 'Atasan / Pimpinan',
+    no_wa: normalizedWa,
+    is_default: Boolean(input.isDefault),
+  };
+
+  const { data, error } = await client
+    .from('kontak_atasan')
+    .insert({ id: generateAgendaUuid(), ...baseFields })
+    .select(KONTAK_ATASAN_SELECT_COLUMNS)
+    .single();
+
+  if (error && error.code === '22P02') {
+    const retry = await client
+      .from('kontak_atasan')
+      .insert(baseFields)
+      .select(KONTAK_ATASAN_SELECT_COLUMNS)
+      .single();
+    if (retry.error) {
+      throw new Error(formatSupabaseError(retry.error));
+    }
+    return mapKontakAtasanRowFromDb(retry.data as Record<string, unknown>);
+  }
+
+  if (error && isMissingKontakTableError(error)) {
+    throw new Error(
+      'Tabel kontak_atasan belum dibuat di Supabase. Jalankan SQL CREATE TABLE kontak_atasan terlebih dahulu.'
+    );
+  }
+  if (error) {
+    throw new Error(formatSupabaseError(error));
+  }
+  return mapKontakAtasanRowFromDb(data as Record<string, unknown>);
+}
+
+export async function setDefaultKontakAtasanInSupabase(id: string): Promise<void> {
+  const client = assertClient();
+  const { error: resetErr } = await client
+    .from('kontak_atasan')
+    .update({ is_default: false })
+    .eq('is_default', true);
+  if (resetErr) {
+    throw new Error(formatSupabaseError(resetErr));
+  }
+
+  const { error } = await client
+    .from('kontak_atasan')
+    .update({ is_default: true })
+    .eq('id', id);
+  if (error) {
+    throw new Error(formatSupabaseError(error));
+  }
+}
+
+export async function deleteKontakAtasanFromSupabase(id: string): Promise<void> {
+  const client = assertClient();
+  const { error } = await client.from('kontak_atasan').delete().eq('id', id);
+  if (error) {
+    throw new Error(formatSupabaseError(error));
+  }
+}
+
+export function subscribeKontakAtasanRealtime(onChange: () => void): () => void {
+  if (!supabase) return () => {};
+  const channel = supabase
+    .channel('kontak-atasan-realtime-sync')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'kontak_atasan' }, () => {
+      onChange();
+    })
+    .subscribe();
+
+  return () => {
+    supabase.removeChannel(channel);
+  };
+}
+

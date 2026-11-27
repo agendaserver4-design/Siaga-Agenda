@@ -85,6 +85,13 @@ export interface MasterUnitItem {
   keterangan: string;
 }
 
+export interface KontakAtasanItem {
+  id: string;
+  namaJabatan: string;
+  noWa: string;
+  isDefault: boolean;
+}
+
 export interface AgendaItem {
   id: string;
   judul: string;
