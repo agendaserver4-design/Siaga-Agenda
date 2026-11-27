@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   BellRing,
@@ -41,6 +41,18 @@ import {
   sharePosterWithImage,
 } from './posterCanvas';
 import {
+  deleteAgendaFromSupabase,
+  fetchAgendasFromSupabase,
+  fetchConflictsFromSupabase,
+  generateAgendaUuid,
+  insertAgendaToSupabase,
+  isSupabaseConfigured,
+  sanitizeZoomUrl,
+  subscribeAgendasRealtime,
+  syncImportedAgendasToSupabase,
+  updateAgendaInSupabase,
+} from './supabaseClient';
+import {
   AUDIT_STORAGE_KEY,
   ActiveView,
   AgendaCategory,
@@ -64,10 +76,8 @@ import {
   SESSION_DURATION_MS,
   SESSION_LOCAL_KEY,
   SESSION_TEMP_KEY,
-  STORAGE_KEY,
   USERS_STORAGE_KEY,
   UserAccount,
-  createInitialAgendas,
   createInitialMasterUnits,
   createInitialUsers,
   extractEBuddyText,
@@ -155,10 +165,14 @@ export default function App() {
     return saved && saved.length > 0 ? saved : createInitialUsers();
   });
 
-  const [agendas, setAgendas] = useState<AgendaItem[]>(() => {
-    const saved = safeParseJson<AgendaItem[] | null>(localStorage.getItem(STORAGE_KEY), null);
-    return saved && saved.length > 0 ? saved : createInitialAgendas();
-  });
+  const [agendas, setAgendas] = useState<AgendaItem[]>([]);
+  const [isLoadingAgendas, setIsLoadingAgendas] = useState<boolean>(isSupabaseConfigured);
+  const [isSavingAgenda, setIsSavingAgenda] = useState<boolean>(false);
+  const [supabaseError, setSupabaseError] = useState<string>(() =>
+    isSupabaseConfigured
+      ? ''
+      : 'Environment variables VITE_SUPABASE_URL dan VITE_SUPABASE_ANON_KEY belum dikonfigurasi.'
+  );
 
   const [masterUnits, setMasterUnits] = useState<MasterUnitItem[]>(() => {
     const saved = safeParseJson<MasterUnitItem[] | null>(
@@ -200,14 +214,48 @@ export default function App() {
     return users.find((u) => u.id === session.userId && u.isActive) || null;
   }, [session, users]);
 
-  // Persist changes
+  // Persist non-agenda app settings
   useEffect(() => {
     localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(users));
   }, [users]);
 
+  const loadAgendasFromDb = useCallback(async (silent = false) => {
+    if (!isSupabaseConfigured) {
+      setIsLoadingAgendas(false);
+      setSupabaseError(
+        'Environment variables VITE_SUPABASE_URL dan VITE_SUPABASE_ANON_KEY belum dikonfigurasi.'
+      );
+      return;
+    }
+    if (!silent) {
+      setIsLoadingAgendas(true);
+    }
+    try {
+      const rows = await fetchAgendasFromSupabase();
+      setAgendas(rows);
+      setSupabaseError('');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Gagal memuat data dari Supabase.';
+      setSupabaseError(msg);
+      if (!silent) {
+        notify(`Gagal memuat jadwal Supabase: ${msg}`, 'warning');
+      }
+    } finally {
+      if (!silent) {
+        setIsLoadingAgendas(false);
+      }
+    }
+  }, []);
+
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(agendas));
-  }, [agendas]);
+    void loadAgendasFromDb(false);
+    const unsubscribe = subscribeAgendasRealtime(() => {
+      void loadAgendasFromDb(true);
+    });
+    return () => {
+      unsubscribe();
+    };
+  }, [loadAgendasFromDb]);
 
   useEffect(() => {
     localStorage.setItem(MASTER_STORAGE_KEY, JSON.stringify(masterUnits));
@@ -385,6 +433,12 @@ export default function App() {
       .filter((a) => a.tanggal === selectedDate && a.status !== 'Dibatalkan')
       .sort((a, b) => timeToMinutes(a.jamMulai) - timeToMinutes(b.jamMulai));
   }, [visibleAgendas, cardMode, selectedMonth, selectedDate]);
+
+  useEffect(() => {
+    if (activeView === 'broadcast_wa') {
+      void loadAgendasFromDb(true);
+    }
+  }, [activeView, loadAgendasFromDb]);
 
   useEffect(() => {
     if (activeView !== 'broadcast_wa' || !posterCanvasRef.current) return;
@@ -593,11 +647,40 @@ export default function App() {
     setAgendaModalOpen(true);
   };
 
-  const handleSaveAgendaForm = (e: React.FormEvent) => {
+  const modalConflicts = useMemo(() => {
+    if (!agendaForm || !agendaForm.tanggal || !agendaForm.jamMulai) return [];
+    const endMinutes = agendaForm.sampaiSelesai
+      ? Math.max(timeToMinutes(agendaForm.jamMulai) + 120, timeToMinutes(agendaForm.jamSelesai))
+      : timeToMinutes(agendaForm.jamSelesai);
+    return getConflictsForCandidate(agendas, {
+      id: agendaForm.id,
+      tanggal: agendaForm.tanggal,
+      jamMulai: agendaForm.jamMulai,
+      jamSelesai: minutesToTime(endMinutes),
+      status: agendaForm.status,
+    });
+  }, [agendas, agendaForm]);
+
+  const ebuddyConflicts = useMemo(() => {
+    if (!ebuddyPreview) return [];
+    return getConflictsForCandidate(agendas, {
+      tanggal: ebuddyPreview.tanggal,
+      jamMulai: ebuddyPreview.jamMulai,
+      jamSelesai: ebuddyPreview.jamSelesai,
+      status: 'Terjadwal',
+    });
+  }, [agendas, ebuddyPreview]);
+
+  const handleSaveAgendaForm = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!agendaForm) return;
+    if (!agendaForm || isSavingAgenda) return;
     if (!agendaForm.judul.trim()) {
       notify('Nama kegiatan wajib diisi.', 'warning');
+      return;
+    }
+    const rawZoom = agendaForm.zoomUrl.trim();
+    if (rawZoom && !sanitizeZoomUrl(rawZoom)) {
+      notify('URL Zoom harus diawali dengan https:// atau http://.', 'warning');
       return;
     }
     let resolvedEnd = agendaForm.jamSelesai;
@@ -610,39 +693,73 @@ export default function App() {
       return;
     }
 
-    if (agendaForm.id) {
-      setAgendas((prev) =>
-        prev.map((a) =>
-          a.id === agendaForm.id
-            ? {
-                ...a,
-                ...agendaForm,
-                jamSelesai: resolvedEnd,
-                judul: agendaForm.judul.trim(),
-                lokasi: agendaForm.lokasi.trim() || 'Menunggu konfirmasi',
-              }
-            : a
-        )
-      );
-      appendAudit('EDIT_AGENDA', 'SUKSES', `Memperbarui agenda "${agendaForm.judul.trim()}".`);
-      notify('Perubahan agenda berhasil disimpan.', 'success');
-    } else {
-      const created: AgendaItem = {
-        ...agendaForm,
+    setIsSavingAgenda(true);
+    try {
+      const dbConflicts = await fetchConflictsFromSupabase({
+        id: agendaForm.id,
+        tanggal: agendaForm.tanggal,
+        jamMulai: agendaForm.jamMulai,
         jamSelesai: resolvedEnd,
-        id: `ag-${Date.now()}`,
-        judul: agendaForm.judul.trim(),
-        lokasi: agendaForm.lokasi.trim() || 'Menunggu konfirmasi',
-        createdBy: currentUser?.namaLengkap || 'Operator',
-        createdAt: new Date().toISOString(),
-      };
-      setAgendas((prev) => [created, ...prev]);
-      setSelectedDate(created.tanggal);
-      appendAudit('TAMBAH_AGENDA', 'SUKSES', `Menambahkan agenda baru "${created.judul}".`);
-      notify('Agenda baru berhasil ditambahkan.', 'success');
+        status: agendaForm.status,
+      });
+
+      if (agendaForm.id) {
+        const updated = await updateAgendaInSupabase(agendaForm.id, {
+          ...agendaForm,
+          jamSelesai: resolvedEnd,
+          judul: agendaForm.judul.trim(),
+          lokasi: agendaForm.lokasi.trim() || 'Menunggu konfirmasi',
+          zoomUrl: sanitizeZoomUrl(agendaForm.zoomUrl),
+        });
+        setAgendas((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
+        if (focusedAgenda?.id === updated.id) {
+          setFocusedAgenda(updated);
+        }
+        setSupabaseError('');
+        appendAudit('EDIT_AGENDA', 'SUKSES', `Memperbarui agenda "${updated.judul}" di Supabase.`);
+        if (dbConflicts.length > 0) {
+          notify(
+            `Agenda diperbarui. Perhatian: jadwal beririsan dengan ${dbConflicts.length} kegiatan lain di tanggal ini.`,
+            'warning'
+          );
+        } else {
+          notify('Perubahan agenda berhasil disimpan ke Supabase.', 'success');
+        }
+      } else {
+        const createdPayload: AgendaItem = {
+          ...agendaForm,
+          jamSelesai: resolvedEnd,
+          id: generateAgendaUuid(),
+          judul: agendaForm.judul.trim(),
+          lokasi: agendaForm.lokasi.trim() || 'Menunggu konfirmasi',
+          zoomUrl: sanitizeZoomUrl(agendaForm.zoomUrl),
+          createdBy: currentUser?.namaLengkap || 'Operator',
+          createdAt: new Date().toISOString(),
+        };
+        const created = await insertAgendaToSupabase(createdPayload);
+        setAgendas((prev) => [created, ...prev]);
+        setSelectedDate(created.tanggal);
+        setSelectedMonth(created.tanggal.slice(0, 7));
+        setSupabaseError('');
+        appendAudit('TAMBAH_AGENDA', 'SUKSES', `Menambahkan agenda baru "${created.judul}" ke Supabase.`);
+        if (dbConflicts.length > 0) {
+          notify(
+            `Agenda tersimpan di Supabase. Perhatian: waktu beririsan dengan ${dbConflicts[0].agenda.judul}.`,
+            'warning'
+          );
+        } else {
+          notify('Agenda baru berhasil disimpan permanen ke Supabase.', 'success');
+        }
+      }
+      setAgendaModalOpen(false);
+      setAgendaForm(null);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Gagal menyimpan agenda ke Supabase.';
+      setSupabaseError(msg);
+      notify(`Gagal menyimpan ke Supabase: ${msg}`, 'warning');
+    } finally {
+      setIsSavingAgenda(false);
     }
-    setAgendaModalOpen(false);
-    setAgendaForm(null);
   };
 
   const handleRequestDeleteAgenda = (item: AgendaItem) => {
@@ -652,24 +769,44 @@ export default function App() {
     }
     setConfirmDialog({
       title: 'Hapus Agenda Kegiatan',
-      message: `Yakin ingin menghapus permanen agenda "${item.judul}" (${item.tanggal} · ${item.jamMulai} WIB)?`,
+      message: `Yakin ingin menghapus permanen agenda "${item.judul}" (${item.tanggal} · ${item.jamMulai} WIB) dari Supabase?`,
       confirmLabel: 'Ya, Hapus Permanen',
-      onConfirm: () => {
-        setAgendas((prev) => prev.filter((a) => a.id !== item.id));
-        appendAudit('HAPUS_AGENDA', 'PERINGATAN', `Menghapus agenda "${item.judul}".`);
-        notify('Agenda berhasil dihapus.', 'success');
-        setConfirmDialog(null);
+      onConfirm: async () => {
+        try {
+          await deleteAgendaFromSupabase(item.id);
+          setAgendas((prev) => prev.filter((a) => a.id !== item.id));
+          if (focusedAgenda?.id === item.id) {
+            setFocusedAgenda(null);
+          }
+          setSupabaseError('');
+          appendAudit('HAPUS_AGENDA', 'PERINGATAN', `Menghapus agenda "${item.judul}" dari Supabase.`);
+          notify('Agenda berhasil dihapus dari Supabase.', 'success');
+          setConfirmDialog(null);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : 'Gagal menghapus agenda di Supabase.';
+          setSupabaseError(msg);
+          notify(`Gagal menghapus dari Supabase: ${msg}`, 'warning');
+        }
       },
     });
   };
 
-  const handleToggleStatus = (item: AgendaItem) => {
+  const handleToggleStatus = async (item: AgendaItem) => {
     const nextStatus: AgendaStatus = item.status === 'Selesai' ? 'Terjadwal' : 'Selesai';
-    setAgendas((prev) =>
-      prev.map((a) => (a.id === item.id ? { ...a, status: nextStatus } : a))
-    );
-    appendAudit('UBAH_STATUS', 'SUKSES', `Status "${item.judul}" diubah menjadi ${nextStatus}.`);
-    notify(`Agenda ditandai ${nextStatus}.`, 'info');
+    try {
+      const updated = await updateAgendaInSupabase(item.id, { status: nextStatus });
+      setAgendas((prev) => prev.map((a) => (a.id === item.id ? updated : a)));
+      if (focusedAgenda?.id === item.id) {
+        setFocusedAgenda(updated);
+      }
+      setSupabaseError('');
+      appendAudit('UBAH_STATUS', 'SUKSES', `Status "${item.judul}" diubah menjadi ${nextStatus} di Supabase.`);
+      notify(`Agenda ditandai ${nextStatus}.`, 'info');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Gagal memperbarui status agenda.';
+      setSupabaseError(msg);
+      notify(`Gagal update status di Supabase: ${msg}`, 'warning');
+    }
   };
 
   // =========================================================================
@@ -1081,77 +1218,84 @@ export default function App() {
     }
   };
 
-  const handleApplyImport = (mode: 'merge' | 'replace') => {
+  const handleApplyImport = async (mode: 'merge' | 'replace') => {
     if (!importPreview) return;
 
-    if (mode === 'replace') {
-      setAgendas(importPreview.agendas);
-      if (importPreview.masterUnits && importPreview.masterUnits.length > 0) {
-        setMasterUnits(importPreview.masterUnits);
-      }
-      if (importPreview.orgTitle) {
-        setOrgTitle(importPreview.orgTitle);
-      }
-      if (
-        perms.canManageUsers &&
-        importIncludeUsers &&
-        importPreview.users &&
-        importPreview.users.length > 0
-      ) {
-        setUsers(importPreview.users);
-      }
-      appendAudit(
-        'IMPORT_RESTORE_PENUH',
-        'PERINGATAN',
-        `Memulihkan penuh data dari "${importPreview.fileName}" (${importPreview.agendas.length} agenda).`
+    try {
+      const { saved, addedCount } = await syncImportedAgendasToSupabase(
+        importPreview.agendas,
+        mode
       );
-      notify(
-        `Berhasil memulihkan ${importPreview.agendas.length} agenda dari file backup.`,
-        'success'
-      );
-    } else {
-      let addedCount = 0;
-      setAgendas((prev) => {
-        const existingIds = new Set(prev.map((a) => a.id));
-        const newItems = importPreview.agendas.filter((a) => !existingIds.has(a.id));
-        addedCount = newItems.length;
-        return [...newItems, ...prev];
-      });
-      if (importPreview.masterUnits && importPreview.masterUnits.length > 0) {
-        setMasterUnits((prev) => {
-          const existingIds = new Set(prev.map((m) => m.id));
-          const newUnits = importPreview.masterUnits!.filter((m) => !existingIds.has(m.id));
-          return [...newUnits, ...prev];
-        });
-      }
-      if (
-        perms.canManageUsers &&
-        importIncludeUsers &&
-        importPreview.users &&
-        importPreview.users.length > 0
-      ) {
-        setUsers((prev) => {
-          const existingIds = new Set(prev.map((u) => u.id));
-          const newUsers = importPreview.users!.filter((u) => !existingIds.has(u.id));
-          return [...prev, ...newUsers];
-        });
-      }
-      appendAudit(
-        'IMPORT_GABUNG_DATA',
-        'SUKSES',
-        `Menggabungkan data dari "${importPreview.fileName}" (${importPreview.agendas.length} item diproses, ${addedCount} agenda baru ditambahkan).`
-      );
-      notify(
-        addedCount > 0
-          ? `Berhasil menggabungkan ${addedCount} agenda baru dari backup.`
-          : 'Semua data dari file backup sudah tersedia di perangkat ini.',
-        'success'
-      );
-    }
+      setAgendas(saved);
+      setSupabaseError('');
 
-    setImportPreview(null);
-    setImportError('');
-    setBackupModalOpen(false);
+      if (mode === 'replace') {
+        if (importPreview.masterUnits && importPreview.masterUnits.length > 0) {
+          setMasterUnits(importPreview.masterUnits);
+        }
+        if (importPreview.orgTitle) {
+          setOrgTitle(importPreview.orgTitle);
+        }
+        if (
+          perms.canManageUsers &&
+          importIncludeUsers &&
+          importPreview.users &&
+          importPreview.users.length > 0
+        ) {
+          setUsers(importPreview.users);
+        }
+        appendAudit(
+          'IMPORT_RESTORE_PENUH',
+          'PERINGATAN',
+          `Memulihkan penuh data dari "${importPreview.fileName}" ke Supabase (${saved.length} agenda).`
+        );
+        notify(
+          `Berhasil memulihkan ${saved.length} agenda dari file backup ke Supabase.`,
+          'success'
+        );
+      } else {
+        if (importPreview.masterUnits && importPreview.masterUnits.length > 0) {
+          setMasterUnits((prev) => {
+            const existingIds = new Set(prev.map((m) => m.id));
+            const newUnits = importPreview.masterUnits!.filter((m) => !existingIds.has(m.id));
+            return [...newUnits, ...prev];
+          });
+        }
+        if (
+          perms.canManageUsers &&
+          importIncludeUsers &&
+          importPreview.users &&
+          importPreview.users.length > 0
+        ) {
+          setUsers((prev) => {
+            const existingIds = new Set(prev.map((u) => u.id));
+            const newUsers = importPreview.users!.filter((u) => !existingIds.has(u.id));
+            return [...prev, ...newUsers];
+          });
+        }
+        appendAudit(
+          'IMPORT_GABUNG_DATA',
+          'SUKSES',
+          `Menggabungkan data dari "${importPreview.fileName}" ke Supabase (${addedCount} agenda baru ditambahkan).`
+        );
+        notify(
+          addedCount > 0
+            ? `Berhasil menyimpan ${addedCount} agenda baru ke Supabase.`
+            : 'Semua data dari file backup sudah tersedia di Supabase.',
+          'success'
+        );
+      }
+
+      setImportPreview(null);
+      setImportError('');
+      setPasteBackupText('');
+      setShowPasteBackup(false);
+      setBackupModalOpen(false);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Gagal menyimpan hasil import ke Supabase.';
+      setImportError(`Gagal menyimpan ke Supabase: ${msg}`);
+      notify(`Gagal import ke Supabase: ${msg}`, 'warning');
+    }
   };
 
   // =========================================================================
@@ -1638,6 +1782,31 @@ export default function App() {
 
         {/* Active View Body */}
         <main className="flex-1 p-4 sm:p-6 max-w-7xl w-full mx-auto">
+          {supabaseError && (
+            <div className="mb-4 rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-xs text-amber-950 flex flex-wrap items-center justify-between gap-3 shadow-xs">
+              <div className="flex items-start gap-2.5">
+                <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+                <div className="space-y-0.5">
+                  <p className="font-bold">Koneksi Database Supabase Memerlukan Penyesuaian</p>
+                  <p className="text-amber-900/90">{supabaseError}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => void loadAgendasFromDb(false)}
+                className="px-3 py-1.5 rounded-lg bg-amber-700 hover:bg-amber-800 text-white font-bold text-xs cursor-pointer"
+              >
+                Coba Hubungkan Ulang
+              </button>
+            </div>
+          )}
+
+          {isLoadingAgendas && agendas.length === 0 && !supabaseError && (
+            <div className="mb-4 rounded-2xl border border-emerald-200 bg-white px-4 py-3 text-xs font-semibold text-emerald-800 shadow-xs">
+              Memuat data jadwal permanen dari database Supabase...
+            </div>
+          )}
+
           {(activeView === 'dashboard' ||
             activeView === 'kalender' ||
             activeView === 'rekap_harian' ||
@@ -1792,6 +1961,23 @@ export default function App() {
                           </p>
                         </div>
                       </div>
+
+                      {ebuddyConflicts.length > 0 && (
+                        <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 space-y-1">
+                          <div className="flex items-center gap-1.5 font-bold text-amber-950">
+                            <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                            <span>
+                              Terdeteksi {ebuddyConflicts.length} Jadwal Beririsan di Supabase
+                            </span>
+                          </div>
+                          {ebuddyConflicts.slice(0, 3).map((ov) => (
+                            <p key={ov.agenda.id} className="text-[11px] pl-5">
+                              &bull; {ov.agenda.judul} ({formatRentangWaktu(ov.agenda)}) — irisan{' '}
+                              {ov.overlapMinutes} mnt
+                            </p>
+                          ))}
+                        </div>
+                      )}
 
                       <div className="flex justify-end">
                         <button
@@ -2125,7 +2311,7 @@ export default function App() {
                                   </p>
                                   <select
                                     value={item.ilustrasi || 'auto'}
-                                    onChange={(e) => {
+                                    onChange={async (e) => {
                                       const nextVal = e.target.value as PosterIllustrationKey;
                                       setAgendas((prev) =>
                                         prev.map((a) =>
@@ -2134,6 +2320,17 @@ export default function App() {
                                       );
                                       if (focusedAgenda?.id === item.id) {
                                         setFocusedAgenda({ ...focusedAgenda, ilustrasi: nextVal });
+                                      }
+                                      try {
+                                        await updateAgendaInSupabase(item.id, {
+                                          ilustrasi: nextVal,
+                                        });
+                                      } catch (err) {
+                                        const msg =
+                                          err instanceof Error
+                                            ? err.message
+                                            : 'Gagal menyimpan ilustrasi ke Supabase.';
+                                        notify(msg, 'warning');
                                       }
                                     }}
                                     className="w-full px-2 py-1 rounded border border-slate-200 bg-white text-[11px] font-medium text-slate-700"
@@ -2499,6 +2696,59 @@ export default function App() {
                 )}
               </div>
 
+              {modalConflicts.length > 0 && (
+                <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 space-y-2 text-xs text-amber-950">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5 font-bold">
+                      <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                      <span>
+                        Deteksi Bentrok: {modalConflicts.length} jadwal lain bersamaan di tanggal ini
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const dur = Math.max(
+                          60,
+                          timeToMinutes(agendaForm.jamSelesai) - timeToMinutes(agendaForm.jamMulai)
+                        );
+                        const slot = findNextAvailableSlot(
+                          agendas,
+                          agendaForm.tanggal,
+                          dur,
+                          agendaForm.id
+                        );
+                        if (slot) {
+                          setAgendaForm({
+                            ...agendaForm,
+                            jamMulai: slot.jamMulai,
+                            jamSelesai: slot.jamSelesai,
+                            sampaiSelesai: false,
+                          });
+                          notify(
+                            `Menemukan jam kosong: ${slot.jamMulai} - ${slot.jamSelesai} WIB.`,
+                            'info'
+                          );
+                        } else {
+                          notify('Tidak ditemukan slot kosong pada jam kerja tanggal tersebut.', 'warning');
+                        }
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-amber-700 hover:bg-amber-800 text-white text-[11px] font-bold cursor-pointer"
+                    >
+                      Cari Jam Kosong
+                    </button>
+                  </div>
+                  <div className="space-y-0.5 text-[11px] text-amber-900 pl-5">
+                    {modalConflicts.slice(0, 3).map((ov) => (
+                      <div key={ov.agenda.id}>
+                        &bull; <strong>{ov.agenda.judul}</strong> ({formatRentangWaktu(ov.agenda)})
+                        — irisan {ov.overlapMinutes} mnt
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1">Lokasi / Tempat</label>
@@ -2672,16 +2922,18 @@ export default function App() {
               <div className="pt-3 border-t border-slate-200 flex justify-end gap-2">
                 <button
                   type="button"
+                  disabled={isSavingAgenda}
                   onClick={() => setAgendaModalOpen(false)}
-                  className="px-4 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-700 hover:bg-slate-50"
+                  className="px-4 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
                 >
                   Batal
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 rounded-xl bg-[#064E3B] hover:bg-[#065F46] text-white text-xs font-bold"
+                  disabled={isSavingAgenda}
+                  className="px-5 py-2 rounded-xl bg-[#064E3B] hover:bg-[#065F46] text-white text-xs font-bold disabled:opacity-60"
                 >
-                  Simpan Agenda
+                  {isSavingAgenda ? 'Menyimpan ke Supabase...' : 'Simpan Agenda'}
                 </button>
               </div>
             </form>
@@ -2967,29 +3219,33 @@ export default function App() {
                           {nextSlot && (
                             <button
                               type="button"
-                              onClick={() => {
-                                setAgendas((prev) =>
-                                  prev.map((a) =>
-                                    a.id === item.id
-                                      ? {
-                                          ...a,
-                                          jamMulai: nextSlot.jamMulai,
-                                          jamSelesai: nextSlot.jamSelesai,
-                                          sampaiSelesai: false,
-                                          isUpdated: true,
-                                        }
-                                      : a
-                                  )
-                                );
-                                appendAudit(
-                                  'GESER_JADWAL',
-                                  'SUKSES',
-                                  `Menggeser "${item.judul}" ke ${nextSlot.jamMulai}-${nextSlot.jamSelesai} WIB.`
-                                );
-                                notify(
-                                  `Jadwal digeser ke ${nextSlot.jamMulai} - ${nextSlot.jamSelesai} WIB.`,
-                                  'success'
-                                );
+                              onClick={async () => {
+                                try {
+                                  const updated = await updateAgendaInSupabase(item.id, {
+                                    jamMulai: nextSlot.jamMulai,
+                                    jamSelesai: nextSlot.jamSelesai,
+                                    sampaiSelesai: false,
+                                    isUpdated: true,
+                                  });
+                                  setAgendas((prev) =>
+                                    prev.map((a) => (a.id === item.id ? updated : a))
+                                  );
+                                  appendAudit(
+                                    'GESER_JADWAL',
+                                    'SUKSES',
+                                    `Menggeser "${item.judul}" ke ${nextSlot.jamMulai}-${nextSlot.jamSelesai} WIB di Supabase.`
+                                  );
+                                  notify(
+                                    `Jadwal digeser ke ${nextSlot.jamMulai} - ${nextSlot.jamSelesai} WIB.`,
+                                    'success'
+                                  );
+                                } catch (err) {
+                                  const msg =
+                                    err instanceof Error
+                                      ? err.message
+                                      : 'Gagal menggeser jadwal di Supabase.';
+                                  notify(msg, 'warning');
+                                }
                               }}
                               className="px-2.5 py-1.5 rounded-lg bg-[#064E3B] hover:bg-[#065F46] text-white text-[11px] font-bold"
                             >
