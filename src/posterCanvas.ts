@@ -158,9 +158,9 @@ const ILLUSTRATION_SRC_MAP: Record<Exclude<PosterIllustrationKey, 'auto'>, strin
   kunjungan: actKunjunganSrc,
 };
 
-export function resolvePosterIllustrationKey(
-  item: AgendaItem
-): Exclude<PosterIllustrationKey, 'auto'> {
+type ActivityKey = Exclude<PosterIllustrationKey, 'auto'>;
+
+export function resolvePosterIllustrationKey(item: AgendaItem): ActivityKey {
   if (item.ilustrasi && item.ilustrasi !== 'auto' && ILLUSTRATION_SRC_MAP[item.ilustrasi]) {
     return item.ilustrasi;
   }
@@ -173,7 +173,7 @@ export function resolvePosterIllustrationKey(
     return 'k3_zoom';
   }
   if (
-    /\bai\b|kecerdasan buatan|medsos|media sosial|konten|pusdatin|infografis|sistem informasi|e-buddy|aplikasi|website|peringatan dini|dashboard|publikasi/.test(
+    /\bai\b|kecerdasan buatan|artifisial|geospasial|medsos|media sosial|konten|pusdatin|infografis|sistem informasi|e-buddy|aplikasi|website|peringatan dini|dashboard|publikasi/.test(
       hay
     )
   ) {
@@ -188,25 +188,21 @@ export function resolvePosterIllustrationKey(
   if (/apel|gladi|upacara|gelar pasukan|baris|patroli/.test(hay)) {
     return 'apel';
   }
-  if (/pesantren|santri|pondok|madrasah|pramuka|ra muslimat|\bmi |\bmts |\bma /.test(hay)) {
+  if (/pesantren|santri|pondok|madrasah|masjid|pramuka|ra muslimat|\bmi |\bmts |\bma /.test(hay)) {
     return 'pesantren';
   }
   if (
-    /sekolah|smp|sma|smk|sdn|\bsd |\btk |siswa|pelajar|kampus|universitas|spab|destana|satlinmas|edukasi|mitigasi/.test(
+    /sekolah|smp|sma|smk|sdn|\bsd |\btk |siswa|murid|pelajar|kampus|universitas|spab|destana|satlinmas|edukasi|mitigasi|satuan pendidikan/.test(
       hay
     )
   ) {
     return 'sekolah_edukasi';
   }
-  if (
-    /angin|cuaca|anemometer|bmkg|iklim|puting beliung|hidrometeorologi|banjir|genangan|hujan|longsor/.test(
-      hay
-    )
-  ) {
-    return 'cuaca';
-  }
-  if (/damkar|kebakaran|pemadam|apar|rescue|sar|evakuasi|api|\bk3\b/.test(hay)) {
+  if (/damkar|kebakaran|pemadam|apar|rescue|sar|evakuasi|api|puting beliung|\bk3\b/.test(hay)) {
     return 'damkar';
+  }
+  if (/angin|cuaca|anemometer|bmkg|iklim|hidrometeorologi|banjir|genangan|hujan|longsor/.test(hay)) {
+    return 'cuaca';
   }
   if (
     /fgd|focus group|seminar|simposium|lokakarya|workshop|hotel|ballroom|rakornas|provinsi|jatim|bimtek|pelatihan/.test(
@@ -257,6 +253,354 @@ function drawImageCover(
   ctx.drawImage(img, sx, sy, sw, sh, x, y, w, h);
 }
 
+// =========================================================================
+// ACTIVITY-MATCHED EDITORIAL BACKGROUND & WATERMARK INSIDE EACH CARD
+// =========================================================================
+interface ActivityBgTheme {
+  washLeft: string;
+  washRight: string;
+  accentColor: string;
+  watermarkColor: string;
+}
+
+const ACTIVITY_BG_THEMES_LIGHT: Record<ActivityKey, ActivityBgTheme> = {
+  senam: {
+    washLeft: '#FFFFFF',
+    washRight: '#F0F9FF',
+    accentColor: 'rgba(14, 165, 233, 0.10)',
+    watermarkColor: 'rgba(100, 116, 139, 0.14)',
+  },
+  apel: {
+    washLeft: '#FFFFFF',
+    washRight: '#EFF6FF',
+    accentColor: 'rgba(29, 78, 216, 0.08)',
+    watermarkColor: 'rgba(30, 58, 138, 0.11)',
+  },
+  cuaca: {
+    washLeft: '#FFFFFF',
+    washRight: '#ECFEFF',
+    accentColor: 'rgba(6, 182, 212, 0.10)',
+    watermarkColor: 'rgba(14, 116, 144, 0.12)',
+  },
+  hotel_fgd: {
+    washLeft: '#FFFFFF',
+    washRight: '#FFFBEB',
+    accentColor: 'rgba(217, 119, 6, 0.09)',
+    watermarkColor: 'rgba(180, 83, 9, 0.11)',
+  },
+  rapat: {
+    washLeft: '#FFFFFF',
+    washRight: '#F1F5F9',
+    accentColor: 'rgba(30, 64, 175, 0.08)',
+    watermarkColor: 'rgba(51, 65, 85, 0.11)',
+  },
+  k3_zoom: {
+    washLeft: '#FFFFFF',
+    washRight: '#FFF7ED',
+    accentColor: 'rgba(234, 88, 12, 0.13)',
+    watermarkColor: 'rgba(234, 88, 12, 0.16)',
+  },
+  zoom: {
+    washLeft: '#FFFFFF',
+    washRight: '#EFF6FF',
+    accentColor: 'rgba(37, 99, 235, 0.10)',
+    watermarkColor: 'rgba(29, 78, 216, 0.12)',
+  },
+  digital_ai: {
+    washLeft: '#FFFFFF',
+    washRight: '#EEF2FF',
+    accentColor: 'rgba(79, 70, 229, 0.10)',
+    watermarkColor: 'rgba(55, 48, 163, 0.12)',
+  },
+  pesantren: {
+    washLeft: '#FFFFFF',
+    washRight: '#ECFDF5',
+    accentColor: 'rgba(5, 150, 105, 0.10)',
+    watermarkColor: 'rgba(6, 95, 70, 0.12)',
+  },
+  sekolah_edukasi: {
+    washLeft: '#FFFFFF',
+    washRight: '#F0FDFA',
+    accentColor: 'rgba(13, 148, 136, 0.09)',
+    watermarkColor: 'rgba(15, 118, 110, 0.11)',
+  },
+  damkar: {
+    washLeft: '#FFFFFF',
+    washRight: '#FFF7ED',
+    accentColor: 'rgba(239, 68, 68, 0.11)',
+    watermarkColor: 'rgba(220, 38, 38, 0.14)',
+  },
+  kunjungan: {
+    washLeft: '#FFFFFF',
+    washRight: '#F7FEE7',
+    accentColor: 'rgba(101, 163, 13, 0.09)',
+    watermarkColor: 'rgba(63, 98, 18, 0.11)',
+  },
+};
+
+function drawActivityWatermark(
+  ctx: CanvasRenderingContext2D,
+  key: ActivityKey,
+  cx: number,
+  cy: number,
+  cardH: number,
+  color: string,
+  accent: string
+) {
+  ctx.save();
+
+  // Soft radial ambient glow behind center-right text (matches subtle flame/smoke glow in reference poster)
+  const glowR = Math.max(76, cardH * 0.9);
+  const glow = ctx.createRadialGradient(cx, cy, 4, cx, cy, glowR);
+  glow.addColorStop(0, accent);
+  glow.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = glow;
+  ctx.beginPath();
+  ctx.arc(cx, cy, glowR, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = color;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2.6;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  const s = Math.min(1.05, Math.max(0.76, cardH / 120));
+  ctx.translate(cx, cy);
+  ctx.scale(s, s);
+
+  switch (key) {
+    case 'senam': {
+      // Dynamic fitness silhouette + outdoor rays
+      ctx.beginPath();
+      ctx.arc(0, -24, 9, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(-26, -12);
+      ctx.lineTo(0, -6);
+      ctx.lineTo(26, -16);
+      ctx.lineTo(14, -2);
+      ctx.lineTo(10, 18);
+      ctx.lineTo(20, 38);
+      ctx.lineTo(8, 40);
+      ctx.lineTo(0, 20);
+      ctx.lineTo(-10, 40);
+      ctx.lineTo(-22, 36);
+      ctx.lineTo(-10, 14);
+      ctx.lineTo(-12, -2);
+      ctx.closePath();
+      ctx.fill();
+      break;
+    }
+    case 'apel': {
+      // Ceremonial squad formation silhouettes
+      [-28, 0, 28].forEach((ox, idx) => {
+        const yOff = idx === 1 ? -4 : 2;
+        ctx.beginPath();
+        ctx.arc(ox, -18 + yOff, 7.5, 0, Math.PI * 2);
+        ctx.fill();
+        drawRoundedRect(ctx, ox - 9, -7 + yOff, 18, 36, 7);
+        ctx.fill();
+      });
+      break;
+    }
+    case 'k3_zoom':
+    case 'damkar': {
+      // Crisp flame & safety silhouette (matches subtle flame/firefighter watermark in reference photo)
+      ctx.beginPath();
+      ctx.moveTo(0, -40);
+      ctx.bezierCurveTo(22, -18, 34, 2, 24, 26);
+      ctx.bezierCurveTo(18, 38, -18, 38, -24, 26);
+      ctx.bezierCurveTo(-34, 4, -20, -14, -6, -24);
+      ctx.bezierCurveTo(-10, -8, 2, -6, 0, -40);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.beginPath();
+      ctx.arc(0, 16, 10, 0, Math.PI * 2);
+      ctx.stroke();
+      break;
+    }
+    case 'zoom': {
+      // Video meeting grid & signal arcs
+      drawRoundedRect(ctx, -34, -24, 68, 44, 7);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(-12, 20);
+      ctx.lineTo(12, 20);
+      ctx.moveTo(-22, 28);
+      ctx.lineTo(22, 28);
+      ctx.stroke();
+      [-16, 16].forEach((gx) => {
+        [-8, 8].forEach((gy) => {
+          drawRoundedRect(ctx, gx - 11, gy - 6, 22, 12, 3);
+          ctx.fill();
+        });
+      });
+      break;
+    }
+    case 'digital_ai': {
+      // Geospatial map grid + AI nodes
+      drawRoundedRect(ctx, -34, -26, 68, 52, 8);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(-34, -4);
+      ctx.lineTo(34, -4);
+      ctx.moveTo(-6, -26);
+      ctx.lineTo(-6, 26);
+      ctx.stroke();
+      [
+        [-18, -14],
+        [14, -14],
+        [16, 12],
+      ].forEach(([nx, ny]) => {
+        ctx.beginPath();
+        ctx.arc(nx, ny, 5, 0, Math.PI * 2);
+        ctx.fill();
+      });
+      break;
+    }
+    case 'cuaca': {
+      // Wind gusts + storm cloud watermark
+      ctx.beginPath();
+      ctx.arc(-10, -8, 16, Math.PI * 0.5, Math.PI * 1.65);
+      ctx.arc(8, -14, 18, Math.PI * 1.1, Math.PI * 1.95);
+      ctx.arc(22, -4, 12, Math.PI * 1.4, Math.PI * 0.5);
+      ctx.closePath();
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(-30, 18);
+      ctx.quadraticCurveTo(0, 10, 28, 18);
+      ctx.moveTo(-22, 28);
+      ctx.quadraticCurveTo(6, 20, 34, 28);
+      ctx.stroke();
+      break;
+    }
+    case 'pesantren': {
+      // Mosque dome & crescent silhouette
+      ctx.beginPath();
+      ctx.arc(0, -4, 24, Math.PI, 0);
+      ctx.lineTo(24, 28);
+      ctx.lineTo(-24, 28);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillRect(-34, 2, 7, 26);
+      ctx.fillRect(27, 2, 7, 26);
+      ctx.beginPath();
+      ctx.arc(0, -34, 7, 0, Math.PI * 2);
+      ctx.fill();
+      break;
+    }
+    case 'sekolah_edukasi': {
+      // Academic cap & open book silhouette
+      ctx.beginPath();
+      ctx.moveTo(0, -28);
+      ctx.lineTo(36, -12);
+      ctx.lineTo(0, 4);
+      ctx.lineTo(-36, -12);
+      ctx.closePath();
+      ctx.fill();
+      drawRoundedRect(ctx, -20, 6, 40, 20, 5);
+      ctx.stroke();
+      break;
+    }
+    case 'hotel_fgd':
+    case 'rapat': {
+      // Executive roundtable / seminar speech bubbles
+      drawRoundedRect(ctx, -34, -26, 46, 30, 10);
+      ctx.fill();
+      drawRoundedRect(ctx, -8, -4, 42, 28, 10);
+      ctx.stroke();
+      break;
+    }
+    case 'kunjungan': {
+      // Location pin & field route curve
+      ctx.beginPath();
+      ctx.arc(0, -10, 16, Math.PI * 0.85, Math.PI * 2.15);
+      ctx.lineTo(0, 26);
+      ctx.closePath();
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(-32, 30);
+      ctx.quadraticCurveTo(0, 18, 32, 30);
+      ctx.stroke();
+      break;
+    }
+  }
+  ctx.restore();
+}
+
+function drawActivityCardBackground(
+  ctx: CanvasRenderingContext2D,
+  cardX: number,
+  cardY: number,
+  cardW: number,
+  cardH: number,
+  textX: number,
+  picX: number,
+  item: AgendaItem,
+  isDark: boolean,
+  cardBgColor: string,
+  onReady?: () => void
+) {
+  const key = resolvePosterIllustrationKey(item);
+  const theme = ACTIVITY_BG_THEMES_LIGHT[key];
+
+  ctx.save();
+  drawRoundedRect(ctx, cardX, cardY, cardW, cardH, 16);
+  ctx.clip();
+
+  if (isDark) {
+    const darkGrad = ctx.createLinearGradient(cardX, cardY, cardX + cardW, cardY + cardH);
+    darkGrad.addColorStop(0, '#12243B');
+    darkGrad.addColorStop(0.65, '#172E4C');
+    darkGrad.addColorStop(1, '#1B375B');
+    ctx.fillStyle = darkGrad;
+    ctx.fillRect(cardX, cardY, cardW, cardH);
+  } else {
+    const bgGrad = ctx.createLinearGradient(cardX, cardY, cardX + cardW, cardY);
+    bgGrad.addColorStop(0, theme.washLeft);
+    bgGrad.addColorStop(0.58, theme.washLeft);
+    bgGrad.addColorStop(1, theme.washRight);
+    ctx.fillStyle = bgGrad;
+    ctx.fillRect(cardX, cardY, cardW, cardH);
+  }
+
+  // Subtle diffused activity photo atmosphere across middle-right zone (keeps left text ultra-crisp)
+  const photoImg = loadCachedImage(pickActivityPhotoSrc(item), onReady);
+  if (photoImg) {
+    ctx.save();
+    ctx.globalAlpha = isDark ? 0.14 : 0.09;
+    const bgPhotoW = 360;
+    const bgPhotoX = picX - 140;
+    drawImageCover(ctx, photoImg, bgPhotoX, cardY, bgPhotoW, cardH);
+    ctx.restore();
+
+    const maskGrad = ctx.createLinearGradient(bgPhotoX - 10, 0, bgPhotoX + 160, 0);
+    maskGrad.addColorStop(0, cardBgColor);
+    maskGrad.addColorStop(0.45, cardBgColor);
+    maskGrad.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = isDark ? 'rgba(18, 36, 59, 0.72)' : maskGrad;
+    ctx.fillRect(bgPhotoX - 12, cardY, 175, cardH);
+  }
+
+  // Subtle vector watermark placed cleanly at the middle-right end of the title area
+  const wmX = Math.max(textX + 260, picX - 58);
+  const wmY = cardY + cardH * 0.52;
+  drawActivityWatermark(
+    ctx,
+    key,
+    wmX,
+    wmY,
+    cardH,
+    isDark ? 'rgba(148, 163, 184, 0.14)' : theme.watermarkColor,
+    isDark ? 'rgba(56, 189, 248, 0.12)' : theme.accentColor
+  );
+
+  ctx.restore();
+}
+
 function drawRowPhotoRight(
   ctx: CanvasRenderingContext2D,
   cardX: number,
@@ -267,7 +611,7 @@ function drawRowPhotoRight(
   item: AgendaItem,
   onReady?: () => void
 ) {
-  const photoW = 240;
+  const photoW = 236;
   const photoX = cardX + cardW - photoW;
   const photoImg = loadCachedImage(pickActivityPhotoSrc(item), onReady);
 
@@ -285,50 +629,189 @@ function drawRowPhotoRight(
     ctx.fillRect(photoX, cardY, photoW, cardH);
   }
 
-  // Smooth editorial feather fade into card background without obscuring right visual subject
-  const fadeGrad = ctx.createLinearGradient(photoX, 0, photoX + 78, 0);
+  const fadeGrad = ctx.createLinearGradient(photoX, 0, photoX + 68, 0);
   fadeGrad.addColorStop(0, cardBgColor);
-  fadeGrad.addColorStop(0.24, cardBgColor);
+  fadeGrad.addColorStop(0.22, cardBgColor);
   fadeGrad.addColorStop(1, 'rgba(255,255,255,0)');
   ctx.fillStyle = fadeGrad;
-  ctx.fillRect(photoX - 4, cardY, 84, cardH);
+  ctx.fillRect(photoX - 4, cardY, 74, cardH);
   ctx.restore();
 }
 
-function drawClockIcon(ctx: CanvasRenderingContext2D, cx: number, cy: number) {
+// =========================================================================
+// ACTIVITY-SPECIFIC CIRCULAR TIMELINE BADGE ICONS (Matches Reference Photo)
+// =========================================================================
+function drawActivityBadgeIcon(
+  ctx: CanvasRenderingContext2D,
+  key: ActivityKey,
+  cx: number,
+  cy: number
+) {
   ctx.save();
   ctx.strokeStyle = '#FFFFFF';
-  ctx.lineWidth = 2.6;
+  ctx.fillStyle = '#FFFFFF';
+  ctx.lineWidth = 2.2;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
+  ctx.translate(cx, cy);
 
-  // Crisp inner clock hands (outer white ring is already drawn around iconCx/iconCy)
-  ctx.beginPath();
-  ctx.moveTo(cx, cy - 10);
-  ctx.lineTo(cx, cy);
-  ctx.lineTo(cx + 7.5, cy + 4.5);
-  ctx.stroke();
-
-  ctx.fillStyle = '#FFFFFF';
-  ctx.beginPath();
-  ctx.arc(cx, cy, 2.2, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
-}
-
-function drawLocationPinIcon(ctx: CanvasRenderingContext2D, cx: number, cy: number) {
-  ctx.save();
-  ctx.fillStyle = '#EA580C';
-  ctx.beginPath();
-  ctx.arc(cx, cy - 2.5, 5.8, Math.PI * 0.85, Math.PI * 2.15);
-  ctx.lineTo(cx, cy + 7.5);
-  ctx.closePath();
-  ctx.fill();
-
-  ctx.fillStyle = '#FFFFFF';
-  ctx.beginPath();
-  ctx.arc(cx, cy - 2.5, 2.2, 0, Math.PI * 2);
-  ctx.fill();
+  switch (key) {
+    case 'senam': {
+      // Running / exercise person
+      ctx.beginPath();
+      ctx.arc(3, -10, 3.2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(-7, -3);
+      ctx.lineTo(1, -5);
+      ctx.lineTo(8, -1);
+      ctx.moveTo(1, -5);
+      ctx.lineTo(-1, 3);
+      ctx.lineTo(-8, 10);
+      ctx.moveTo(-1, 3);
+      ctx.lineTo(6, 5);
+      ctx.lineTo(5, 11);
+      ctx.stroke();
+      break;
+    }
+    case 'apel': {
+      // Group of 3 standing personnel
+      [-7, 0, 7].forEach((ox, idx) => {
+        const dy = idx === 1 ? -2 : 0;
+        ctx.beginPath();
+        ctx.arc(ox, -6 + dy, 2.3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.moveTo(ox - 3.5, 6 + dy);
+        ctx.quadraticCurveTo(ox, -1 + dy, ox + 3.5, 6 + dy);
+        ctx.stroke();
+      });
+      break;
+    }
+    case 'zoom':
+    case 'k3_zoom': {
+      // Laptop / online meeting screen
+      drawRoundedRect(ctx, -10, -8, 20, 13, 2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(-13, 8);
+      ctx.lineTo(13, 8);
+      ctx.stroke();
+      ctx.fillRect(-6, -4, 5, 5);
+      ctx.fillRect(1, -4, 5, 5);
+      break;
+    }
+    case 'rapat':
+    case 'hotel_fgd': {
+      // Discussion bubble & people
+      drawRoundedRect(ctx, -10, -9, 15, 10, 3);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(5, 2, 2.6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(0, 10);
+      ctx.quadraticCurveTo(5, 4, 10, 10);
+      ctx.stroke();
+      break;
+    }
+    case 'pesantren': {
+      // Mosque dome & crescent
+      ctx.beginPath();
+      ctx.arc(0, -1, 7.5, Math.PI, 0);
+      ctx.lineTo(7.5, 9);
+      ctx.lineTo(-7.5, 9);
+      ctx.closePath();
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(-11, 2);
+      ctx.lineTo(-11, 9);
+      ctx.moveTo(11, 2);
+      ctx.lineTo(11, 9);
+      ctx.moveTo(0, -9);
+      ctx.lineTo(0, -12);
+      ctx.stroke();
+      break;
+    }
+    case 'sekolah_edukasi': {
+      // School / graduation icon
+      ctx.beginPath();
+      ctx.moveTo(0, -10);
+      ctx.lineTo(11, -5);
+      ctx.lineTo(0, 0);
+      ctx.lineTo(-11, -5);
+      ctx.closePath();
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(-6, -1);
+      ctx.lineTo(-6, 7);
+      ctx.quadraticCurveTo(0, 10, 6, 7);
+      ctx.lineTo(6, -1);
+      ctx.stroke();
+      break;
+    }
+    case 'damkar': {
+      // Flame icon
+      ctx.beginPath();
+      ctx.moveTo(0, -11);
+      ctx.bezierCurveTo(7, -4, 9, 2, 6, 8);
+      ctx.bezierCurveTo(3, 11, -3, 11, -6, 8);
+      ctx.bezierCurveTo(-9, 2, -6, -3, -2, -6);
+      ctx.bezierCurveTo(-3, -2, 1, -2, 0, -11);
+      ctx.closePath();
+      ctx.fill();
+      break;
+    }
+    case 'cuaca': {
+      // Cloud + wind lines
+      ctx.beginPath();
+      ctx.arc(-4, -3, 4.5, Math.PI * 0.5, Math.PI * 1.65);
+      ctx.arc(2, -5, 5, Math.PI * 1.1, Math.PI * 1.95);
+      ctx.arc(7, -2, 3.5, Math.PI * 1.4, Math.PI * 0.5);
+      ctx.closePath();
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(-8, 6);
+      ctx.lineTo(8, 6);
+      ctx.moveTo(-5, 10);
+      ctx.lineTo(10, 10);
+      ctx.stroke();
+      break;
+    }
+    case 'digital_ai': {
+      // Map / dashboard icon
+      ctx.beginPath();
+      ctx.moveTo(-10, -7);
+      ctx.lineTo(-3, -9);
+      ctx.lineTo(3, -6);
+      ctx.lineTo(10, -8);
+      ctx.lineTo(10, 7);
+      ctx.lineTo(3, 9);
+      ctx.lineTo(-3, 6);
+      ctx.lineTo(-10, 8);
+      ctx.closePath();
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(-3, -9);
+      ctx.lineTo(-3, 6);
+      ctx.moveTo(3, -6);
+      ctx.lineTo(3, 9);
+      ctx.stroke();
+      break;
+    }
+    case 'kunjungan': {
+      // Map pin
+      ctx.beginPath();
+      ctx.arc(0, -3, 6.2, Math.PI * 0.85, Math.PI * 2.15);
+      ctx.lineTo(0, 10);
+      ctx.closePath();
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(0, -3, 2, 0, Math.PI * 2);
+      ctx.fill();
+      break;
+    }
+  }
   ctx.restore();
 }
 
@@ -421,7 +904,7 @@ export function renderBroadcastPosterCanvas(
       : opts.agendas.slice(0, 12);
 
   const headerHeight = 236;
-  const skylineHeight = 86;
+  const skylineHeight = 82;
   const footerHeight = 96;
   const badgeX = 24;
   const badgeW = 166;
@@ -432,9 +915,9 @@ export function renderBroadcastPosterCanvas(
 
   const rightEdge = cardX + cardW - 12; // 1040px
   const picZoneRight = opts.showIllustration ? rightEdge - 216 : rightEdge; // 824px
-  const picW = 192;
-  const picX = picZoneRight - picW; // 632px
-  const textMaxW = picX - textX - 16; // ~408px when photo shown, ~620px when hidden
+  const picW = 196;
+  const picX = picZoneRight - picW; // 628px
+  const textMaxW = picX - textX - 18; // ~402px when photo shown, ~618px when hidden
 
   const isDark = opts.cardTheme === 'gelap';
   const isCleanWhite = opts.cardTheme === 'putih';
@@ -444,7 +927,7 @@ export function renderBroadcastPosterCanvas(
     ctx.font = '700 22px "Poppins", system-ui, sans-serif';
     const titleLines = wrapTextLines(ctx, item.judul, textMaxW, 3);
     ctx.font = '500 17px "Poppins", system-ui, sans-serif';
-    const locLines = wrapTextLines(ctx, `di ${item.lokasi}`, textMaxW - 22, 2);
+    const locLines = wrapTextLines(ctx, `di ${item.lokasi}`, textMaxW, 2);
 
     const hasBadgeTop = opts.showUpdatedBadge && Boolean(item.isUpdated);
     const hasZoomLine = opts.showZoomUrl && Boolean(item.zoomUrl);
@@ -453,14 +936,14 @@ export function renderBroadcastPosterCanvas(
       (hasBadgeTop ? 24 : 0) +
       titleLines.length * 28 +
       locLines.length * 22 +
-      (hasZoomLine ? 22 : 0) +
-      30;
-    const rowH = Math.max(114, contentH);
+      (hasZoomLine ? 24 : 0) +
+      28;
+    const rowH = Math.max(110, contentH);
     return { item, titleLines, locLines, hasBadgeTop, hasZoomLine, rowH };
   });
 
-  const bodyPaddingY = 24;
-  const rowGap = 11;
+  const bodyPaddingY = 22;
+  const rowGap = 10;
   const rowsTotalH =
     rowLayouts.length > 0
       ? rowLayouts.reduce((acc, r) => acc + r.rowH + rowGap, 0) - rowGap
@@ -487,20 +970,20 @@ export function renderBroadcastPosterCanvas(
     ctx.fillRect(0, 0, width, totalHeight);
   } else {
     const bgGrad = ctx.createLinearGradient(0, 0, 0, totalHeight);
-    bgGrad.addColorStop(0, '#EEF4FA');
-    bgGrad.addColorStop(0.6, '#E8EFF7');
-    bgGrad.addColorStop(1, '#DFE9F4');
+    bgGrad.addColorStop(0, '#EDF3FA');
+    bgGrad.addColorStop(0.6, '#E6EEF7');
+    bgGrad.addColorStop(1, '#DCE8F4');
     ctx.fillStyle = bgGrad;
     ctx.fillRect(0, 0, width, totalHeight);
   }
 
   // =========================================================================
-  // 1. EDITORIAL HEADER BANNER (With Monumen Jayandaru Sidoarjo Photo)
+  // 1. EDITORIAL HEADER BANNER (BPBD Kab. Sidoarjo + Jayandaru + Officer)
   // =========================================================================
   const heroImg = loadCachedImage(headerHeroSrc, onImageReady);
 
   ctx.save();
-  ctx.fillStyle = isDark ? '#061220' : '#081D36';
+  ctx.fillStyle = isDark ? '#061220' : '#081F3B';
   ctx.fillRect(0, 0, width, headerHeight);
 
   if (heroImg) {
@@ -515,21 +998,21 @@ export function renderBroadcastPosterCanvas(
 
     drawImageCover(ctx, heroImg, 515, 0, width - 515, headerHeight);
 
-    const edgeFade = ctx.createLinearGradient(525, 0, 615, 0);
-    edgeFade.addColorStop(0, isDark ? 'rgba(6,18,32,0.55)' : 'rgba(8,29,54,0.48)');
-    edgeFade.addColorStop(1, 'rgba(8,29,54,0)');
+    const edgeFade = ctx.createLinearGradient(525, 0, 620, 0);
+    edgeFade.addColorStop(0, isDark ? 'rgba(6,18,32,0.58)' : 'rgba(8,31,59,0.50)');
+    edgeFade.addColorStop(1, 'rgba(8,31,59,0)');
     ctx.fillStyle = edgeFade;
-    ctx.fillRect(520, 0, 105, headerHeight);
+    ctx.fillRect(520, 0, 110, headerHeight);
 
-    const rightVig = ctx.createLinearGradient(width - 220, 0, width, 130);
+    const rightVig = ctx.createLinearGradient(width - 230, 0, width, 140);
     rightVig.addColorStop(0, 'rgba(8,22,40,0)');
-    rightVig.addColorStop(1, 'rgba(8,22,40,0.78)');
+    rightVig.addColorStop(1, 'rgba(8,22,40,0.80)');
     ctx.fillStyle = rightVig;
-    ctx.fillRect(width - 230, 0, 230, 145);
+    ctx.fillRect(width - 240, 0, 240, 150);
     ctx.restore();
   }
 
-  // Diagonal orange accent ribbon + thin gold hairline
+  // Diagonal orange ribbon + crisp gold hairline
   ctx.beginPath();
   ctx.moveTo(582, 0);
   ctx.lineTo(604, 0);
@@ -548,22 +1031,22 @@ export function renderBroadcastPosterCanvas(
   ctx.fillStyle = '#FBBF24';
   ctx.fill();
 
-  // Bottom curved orange edge bar across header
+  // Bottom orange edge bar across header
   ctx.fillStyle = '#EA580C';
   ctx.fillRect(0, headerHeight - 6, width, 6);
   ctx.restore();
 
-  // Top-right tagline with crisp shadow
+  // Top-right tagline matching reference poster
   ctx.save();
   ctx.textAlign = 'right';
-  ctx.shadowColor = 'rgba(0,0,0,0.6)';
+  ctx.shadowColor = 'rgba(0,0,0,0.65)';
   ctx.shadowBlur = 6;
   ctx.fillStyle = '#FFFFFF';
-  ctx.font = '800 19px "Poppins", system-ui, sans-serif';
+  ctx.font = 'italic 700 18px "Poppins", system-ui, sans-serif';
   ctx.fillText('Sidoarjo', width - 26, 36);
   ctx.fillText('Tangguh', width - 26, 58);
   ctx.fillStyle = '#FDE68A';
-  ctx.font = '700 15px "Poppins", system-ui, sans-serif';
+  ctx.font = 'italic 600 15px "Poppins", system-ui, sans-serif';
   ctx.fillText('Selamat', width - 26, 80);
   ctx.fillText('Bersama', width - 26, 100);
   ctx.restore();
@@ -592,24 +1075,24 @@ export function renderBroadcastPosterCanvas(
     drawVectorBpbdEmblem(ctx, logoCx, logoCy, logoR);
   }
 
-  // Main Header Titles with subtle crisp drop shadow
+  // Main Header Titles
   ctx.save();
   ctx.textAlign = 'left';
   ctx.shadowColor = 'rgba(0,0,0,0.35)';
   ctx.shadowBlur = 4;
   ctx.fillStyle = '#FFFFFF';
-  ctx.font = '800 42px "Poppins", system-ui, sans-serif';
+  ctx.font = '800 43px "Poppins", system-ui, sans-serif';
   ctx.fillText(
     opts.cardMode === 'bulanan' ? 'REKAP BULANAN' : 'AGENDA KEGIATAN',
     148,
     74
   );
   ctx.fillStyle = '#FBBF24';
-  ctx.font = '800 33px "Poppins", system-ui, sans-serif';
+  ctx.font = '800 34px "Poppins", system-ui, sans-serif';
   ctx.fillText((opts.orgTitle || 'BPBD KAB. SIDOARJO').toUpperCase(), 148, 118);
   ctx.restore();
 
-  // Orange Date Banner Pill
+  // Sweeping Orange Date Banner Pill
   let bannerText = formatTanggalLengkap(opts.selectedDate);
   if (opts.cardMode === 'bulanan') {
     const [yy, mm] = opts.selectedMonth.split('-').map(Number);
@@ -619,32 +1102,32 @@ export function renderBroadcastPosterCanvas(
   }
 
   ctx.save();
-  const pillGrad = ctx.createLinearGradient(32, 152, 526, 204);
+  const pillGrad = ctx.createLinearGradient(28, 152, 535, 204);
   pillGrad.addColorStop(0, '#EA580C');
   pillGrad.addColorStop(1, '#F97316');
-  drawRoundedRect(ctx, 32, 152, 496, 52, 26);
+  drawRoundedRect(ctx, 28, 152, 506, 52, 26);
   ctx.fillStyle = pillGrad;
   ctx.fill();
-  ctx.strokeStyle = 'rgba(255,255,255,0.34)';
+  ctx.strokeStyle = 'rgba(255,255,255,0.35)';
   ctx.lineWidth = 1.5;
   ctx.stroke();
 
   ctx.strokeStyle = '#FFFFFF';
   ctx.lineWidth = 2.4;
-  drawRoundedRect(ctx, 54, 167, 22, 22, 4);
+  drawRoundedRect(ctx, 50, 167, 22, 22, 4);
   ctx.stroke();
   ctx.beginPath();
-  ctx.moveTo(54, 175);
-  ctx.lineTo(76, 175);
+  ctx.moveTo(50, 175);
+  ctx.lineTo(72, 175);
   ctx.stroke();
 
   ctx.fillStyle = '#FFFFFF';
   ctx.font = '700 22px "Poppins", system-ui, sans-serif';
-  ctx.fillText(bannerText, 90, 186);
+  ctx.fillText(bannerText, 86, 186);
   ctx.restore();
 
   // =========================================================================
-  // 2. TIMELINE SPINE & AGENDA CARDS
+  // 2. DOTTED TIMELINE SPINE & ACTIVITY-THEMED AGENDA CARDS
   // =========================================================================
   let cursorY = headerHeight + bodyPaddingY;
 
@@ -672,8 +1155,9 @@ export function renderBroadcastPosterCanvas(
 
     if (rowLayouts.length > 1) {
       ctx.save();
-      ctx.strokeStyle = isDark ? '#334155' : '#64748B';
+      ctx.strokeStyle = isDark ? '#475569' : '#334155';
       ctx.lineWidth = 2.5;
+      ctx.setLineDash([4, 5]);
       ctx.beginPath();
       ctx.moveTo(spineX, firstCenterY);
       ctx.lineTo(spineX, lastCenterY);
@@ -684,10 +1168,11 @@ export function renderBroadcastPosterCanvas(
     rowLayouts.forEach((layout, idx) => {
       const { item, titleLines, locLines, hasBadgeTop, hasZoomLine, rowH } = layout;
       const cardY = cursorY;
+      const activityKey = resolvePosterIllustrationKey(item);
 
-      // Card Container
+      // Card Container Shadow
       ctx.save();
-      ctx.shadowColor = isDark ? 'rgba(0,0,0,0.35)' : 'rgba(15, 23, 42, 0.09)';
+      ctx.shadowColor = isDark ? 'rgba(0,0,0,0.38)' : 'rgba(15, 23, 42, 0.10)';
       ctx.shadowBlur = 12;
       ctx.shadowOffsetY = 3;
       drawRoundedRect(ctx, cardX, cardY, cardW, rowH, 16);
@@ -695,41 +1180,65 @@ export function renderBroadcastPosterCanvas(
       ctx.fill();
       ctx.restore();
 
-      ctx.save();
-      drawRoundedRect(ctx, cardX, cardY, cardW, rowH, 16);
-      ctx.strokeStyle = isDark ? '#1F3B5C' : isCleanWhite ? '#CBD5E1' : '#DCE5F0';
-      ctx.lineWidth = 1.25;
-      ctx.stroke();
-      ctx.restore();
+      // Activity-matched Editorial Card Background + Watermark
+      drawActivityCardBackground(
+        ctx,
+        cardX,
+        cardY,
+        cardW,
+        rowH,
+        textX,
+        picX,
+        item,
+        isDark,
+        cardBgColor,
+        onImageReady
+      );
 
-      // Right-aligned activity-matched documentary photograph
+      // Right-aligned activity-matched photograph
       if (opts.showIllustration) {
         drawRowPhotoRight(ctx, cardX, cardY, cardW, rowH, cardBgColor, item, onImageReady);
       }
 
-      // Protruding Stadium Time Badge + Circular Clock Icon
-      const isOnline =
-        /zoom|daring|virtual|meet/i.test(item.lokasi) || item.kategori === 'Rapat Eksternal';
-      const badgeColor = isOnline ? '#0B4F8A' : idx % 2 === 0 ? '#EA580C' : '#0B4F8A';
+      // Crisp outer card stroke
+      ctx.save();
+      drawRoundedRect(ctx, cardX, cardY, cardW, rowH, 16);
+      ctx.strokeStyle = isDark ? '#1F3B5C' : isCleanWhite ? '#CBD5E1' : '#D5E0EC';
+      ctx.lineWidth = 1.25;
+      ctx.stroke();
+      ctx.restore();
+
+      // Strictly Alternating Orange / Deep Blue Stadium Time Badge + Activity Icon
+      const isOrangeBadge = idx % 2 === 0;
+      const badgeTopColor = isOrangeBadge ? '#F97316' : '#135D9E';
+      const badgeBotColor = isOrangeBadge ? '#EA580C' : '#0B467D';
       const badgeH = item.sampaiSelesai ? 68 : 62;
       const badgeY = cardY + rowH / 2 - badgeH / 2;
 
       ctx.save();
+      ctx.shadowColor = 'rgba(15, 23, 42, 0.16)';
+      ctx.shadowBlur = 6;
+      ctx.shadowOffsetY = 2;
+      const pillG = ctx.createLinearGradient(badgeX, badgeY, badgeX, badgeY + badgeH);
+      pillG.addColorStop(0, badgeTopColor);
+      pillG.addColorStop(1, badgeBotColor);
       drawRoundedRect(ctx, badgeX, badgeY, badgeW, badgeH, 34);
-      ctx.fillStyle = badgeColor;
+      ctx.fillStyle = pillG;
       ctx.fill();
+      ctx.restore();
 
+      ctx.save();
       const iconCx = spineX;
       const iconCy = badgeY + badgeH / 2;
-      ctx.fillStyle = badgeColor;
+      ctx.fillStyle = badgeBotColor;
       ctx.beginPath();
       ctx.arc(iconCx, iconCy, 23, 0, Math.PI * 2);
       ctx.fill();
       ctx.strokeStyle = '#FFFFFF';
-      ctx.lineWidth = 2.6;
+      ctx.lineWidth = 2.4;
       ctx.stroke();
 
-      drawClockIcon(ctx, iconCx, iconCy);
+      drawActivityBadgeIcon(ctx, activityKey, iconCx, iconCy);
 
       ctx.fillStyle = '#FFFFFF';
       ctx.textAlign = 'left';
@@ -748,8 +1257,13 @@ export function renderBroadcastPosterCanvas(
       );
       ctx.restore();
 
-      // Middle Content Block
-      let textY = cardY + 28;
+      // Middle Content Block (Vertically balanced inside rowH)
+      const blockHeight =
+        (hasBadgeTop ? 24 : 0) +
+        titleLines.length * 28 +
+        locLines.length * 22 +
+        (hasZoomLine ? 22 : 0);
+      let textY = Math.max(cardY + 28, cardY + (rowH - blockHeight) / 2 + 18);
 
       if (hasBadgeTop && opts.showUpdatedBadge && item.isUpdated) {
         ctx.save();
@@ -772,25 +1286,23 @@ export function renderBroadcastPosterCanvas(
         textY += 28;
       });
 
-      // Vector orange map-pin + crisp location text
-      drawLocationPinIcon(ctx, textX + 7, textY - 5);
       ctx.fillStyle = isDark ? '#CBD5E1' : '#334155';
       ctx.font = '500 17px "Poppins", system-ui, sans-serif';
       locLines.forEach((line) => {
-        ctx.fillText(line, textX + 20, textY);
+        ctx.fillText(line, textX, textY);
         textY += 22;
       });
 
       if (hasZoomLine && item.zoomUrl) {
-        ctx.fillStyle = isDark ? '#60A5FA' : '#1D4ED8';
+        ctx.fillStyle = isDark ? '#60A5FA' : '#1E3A8A';
         ctx.font = '600 14px "JetBrains Mono", monospace';
         const zoomDisplay =
-          item.zoomUrl.length > 44 ? `${item.zoomUrl.slice(0, 43)}…` : item.zoomUrl;
-        ctx.fillText(`Zoom: ${zoomDisplay}`, textX, textY + 2);
+          item.zoomUrl.length > 46 ? `${item.zoomUrl.slice(0, 45)}…` : item.zoomUrl;
+        ctx.fillText(zoomDisplay, textX, textY + 2);
       }
       ctx.restore();
 
-      // Soft Peach PIC Tag before photo zone
+      // Soft Peach PIC Tag before photo zone (matches reference poster)
       const picText = item.pejabatPendamping || item.penyelenggara || 'Sekretariat BPBD';
       ctx.save();
       ctx.font = '700 15px "Poppins", system-ui, sans-serif';
@@ -799,7 +1311,7 @@ export function renderBroadcastPosterCanvas(
       const picY = cardY + rowH / 2 - picH / 2;
 
       drawRoundedRect(ctx, picX, picY, picW, picH, 10);
-      ctx.fillStyle = isDark ? 'rgba(30,41,59,0.96)' : 'rgba(255, 243, 230, 0.98)';
+      ctx.fillStyle = isDark ? 'rgba(30,41,59,0.96)' : 'rgba(255, 241, 226, 0.98)';
       ctx.fill();
       ctx.strokeStyle = isDark ? '#334155' : '#FED7AA';
       ctx.lineWidth = 1.25;
@@ -813,7 +1325,7 @@ export function renderBroadcastPosterCanvas(
       ctx.arc(picX + 16, picY + picH / 2 + 6, 6.5, Math.PI, 0);
       ctx.fill();
 
-      ctx.fillStyle = isDark ? '#FDBA74' : '#431407';
+      ctx.fillStyle = isDark ? '#FDBA74' : '#3B1707';
       ctx.textAlign = 'left';
       picLines.forEach((pLine, lIdx) => {
         ctx.fillText(pLine, picX + 29, picY + 23 + lIdx * 18);

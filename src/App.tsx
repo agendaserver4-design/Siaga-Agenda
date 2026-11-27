@@ -348,8 +348,8 @@ export default function App() {
   const [cardTheme, setCardTheme] = useState<CardTheme>('bpbd');
   const [cardMode, setCardMode] = useState<CardMode>('harian');
   const [focusedAgenda, setFocusedAgenda] = useState<AgendaItem | null>(null);
-  const [showUpdatedBadge, setShowUpdatedBadge] = useState(true);
-  const [showZoomUrl, setShowZoomUrl] = useState(false);
+  const [showUpdatedBadge, setShowUpdatedBadge] = useState(false);
+  const [showZoomUrl, setShowZoomUrl] = useState(true);
   const [showIllustration, setShowIllustration] = useState(true);
   const [logoTick, setLogoTick] = useState(0);
   const posterCanvasRef = useRef<HTMLCanvasElement | null>(null);
