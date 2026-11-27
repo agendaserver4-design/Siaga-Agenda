@@ -12,6 +12,19 @@ function getAudioContext(): AudioContext | null {
   return sharedAudioCtx;
 }
 
+export async function unlockAudioPermission(): Promise<boolean> {
+  const ctx = getAudioContext();
+  if (!ctx) return false;
+  try {
+    if (ctx.state === 'suspended') {
+      await ctx.resume();
+    }
+    return ctx.state === 'running';
+  } catch {
+    return false;
+  }
+}
+
 export async function unlockAndTestReminderSound(): Promise<boolean> {
   return playReminderChime();
 }

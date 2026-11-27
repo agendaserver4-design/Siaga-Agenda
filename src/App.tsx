@@ -30,7 +30,6 @@ import {
   Trash2,
   Upload,
   UserPlus,
-  Volume2,
   X,
 } from 'lucide-react';
 import { DashboardView } from './DashboardView';
@@ -43,7 +42,7 @@ import {
   resolvePosterIllustrationKey,
   sharePosterWithImage,
 } from './posterCanvas';
-import { playReminderChime, unlockAndTestReminderSound } from './soundAlert';
+import { playReminderChime, unlockAudioPermission } from './soundAlert';
 import {
   deleteAgendaFromSupabase,
   deleteUserFromSupabase,
@@ -445,7 +444,6 @@ export default function App() {
   const [reminderPopupOpen, setReminderPopupOpen] = useState(false);
   const [reminderNowMs, setReminderNowMs] = useState<number>(() => Date.now());
   const [alarmAgenda, setAlarmAgenda] = useState<AgendaItem | null>(null);
-  const [soundReady, setSoundReady] = useState(false);
   const autoRemindedIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
@@ -453,6 +451,18 @@ export default function App() {
       setReminderNowMs(Date.now());
     }, 30000);
     return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    const handleUnlock = () => {
+      void unlockAudioPermission();
+    };
+    window.addEventListener('pointerdown', handleUnlock, { once: true, passive: true });
+    window.addEventListener('keydown', handleUnlock, { once: true });
+    return () => {
+      window.removeEventListener('pointerdown', handleUnlock);
+      window.removeEventListener('keydown', handleUnlock);
+    };
   }, []);
 
   const notify = (text: string, tone: ToastMessage['tone'] = 'info') => {
@@ -558,9 +568,7 @@ export default function App() {
         saveTriggeredAlarmId(dueItem.id);
         autoRemindedIdsRef.current.add(dueItem.id);
         setAlarmAgenda(dueItem);
-        void playReminderChime().then((played) => {
-          if (played) setSoundReady(true);
-        });
+        void playReminderChime();
       }
     };
 
@@ -2177,28 +2185,6 @@ export default function App() {
             <span className="hidden sm:inline-block text-xs font-bold text-emerald-700 whitespace-nowrap">
               {ROLE_META[currentUser.roleKode].shortLabel}
             </span>
-            <button
-              type="button"
-              onClick={async () => {
-                const played = await unlockAndTestReminderSound();
-                setSoundReady(true);
-                notify(
-                  played
-                    ? 'Izin suara aktif! Alarm pengingat otomatis H-1 jam siap berbunyi.'
-                    : 'Izin audio diaktifkan untuk sesi ini.',
-                  played ? 'success' : 'info'
-                );
-              }}
-              title="Uji coba suara notifikasi & aktifkan izin audio browser untuk alarm H-1 jam"
-              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-bold transition cursor-pointer ${
-                soundReady
-                  ? 'border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-800'
-                  : 'border-orange-300 bg-orange-50 hover:bg-orange-100 text-orange-800'
-              }`}
-            >
-              <Volume2 className="w-3.5 h-3.5 shrink-0" />
-              <span className="whitespace-nowrap">🔔 Tes Suara Pengingat</span>
-            </button>
             <button
               type="button"
               onClick={() => {

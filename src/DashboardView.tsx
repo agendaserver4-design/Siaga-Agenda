@@ -257,12 +257,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       .sort((a, b) => timeToMinutes(a.jamMulai) - timeToMinutes(b.jamMulai));
   }, [visibleAgendas, selectedDate]);
 
-  // Month stats for Hero & Dashboard KPIs
+  // Month stats for Dashboard KPIs
   const [curYear, curMonth] = selectedMonth.split('-').map(Number);
   const activeMonthLabel = `${BULAN_ID[(curMonth || 1) - 1]} ${curYear}`;
-  const daysInSelectedMonth = new Date(curYear || 2026, curMonth || 1, 0).getDate();
-  const monthStartLabel = `01 ${BULAN_ID[(curMonth || 1) - 1].slice(0, 3)} ${curYear}`;
-  const monthEndLabel = `${String(daysInSelectedMonth).padStart(2, '0')} ${BULAN_ID[(curMonth || 1) - 1].slice(0, 3)} ${curYear}`;
 
   const monthAgendas = useMemo(
     () => visibleAgendas.filter((a) => a.tanggal.startsWith(selectedMonth)),
@@ -679,51 +676,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   if (activeView === 'dashboard') {
     return (
       <div className="space-y-6">
-        {/* Executive Hero Summary Card */}
-        <section className="rounded-2xl border border-emerald-200/80 bg-white p-5 sm:p-6 shadow-sm">
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-center">
-            <div className="lg:col-span-7 space-y-3">
-              <div className="inline-flex items-center gap-2 rounded-lg bg-emerald-50 border border-emerald-200 px-3 py-1 text-xs font-semibold text-emerald-800">
-                <Calendar className="w-3.5 h-3.5 text-emerald-700" />
-                <span>Monitoring {activeMonthLabel} · BPBD Kab. Sidoarjo</span>
-              </div>
-              <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">
-                Ringkasan eksekutif agenda kegiatan, ekstraksi e-Buddy, dan rekap harian.
-              </h2>
-              <p className="text-sm text-slate-600 leading-relaxed max-w-2xl">
-                Dashboard terpadu untuk memantau agenda harian pimpinan dan bidang, serta menyiapkan laporan resmi dan kartu broadcast WhatsApp.
-              </p>
-            </div>
-
-            <div className="lg:col-span-5 grid grid-cols-2 gap-3">
-              <div className="rounded-xl border border-emerald-100 bg-emerald-50/40 p-3.5">
-                <p className="text-xs font-medium text-slate-500">Periode Aktif</p>
-                <p className="mt-1 text-sm font-bold text-slate-900 tabular-nums">
-                  {monthStartLabel} - {monthEndLabel}
-                </p>
-              </div>
-              <div className="rounded-xl border border-emerald-100 bg-emerald-50/40 p-3.5">
-                <p className="text-xs font-medium text-slate-500">Agenda Selesai (Bulan)</p>
-                <p className="mt-1 text-sm font-bold text-emerald-700 tabular-nums">
-                  {monthCompletedCount} Kegiatan
-                </p>
-              </div>
-              <div className="rounded-xl border border-emerald-100 bg-emerald-50/40 p-3.5">
-                <p className="text-xs font-medium text-slate-500">Agenda Hari Ini</p>
-                <p className="mt-1 text-sm font-bold text-emerald-800 tabular-nums">
-                  {dayActiveAgendas.length} Kegiatan
-                </p>
-              </div>
-              <div className="rounded-xl border border-teal-100 bg-teal-50/40 p-3.5">
-                <p className="text-xs font-medium text-slate-500">Total Agenda Bulan Ini</p>
-                <p className="mt-1 text-sm font-bold text-teal-700 tabular-nums">
-                  {monthActiveCount} Kegiatan
-                </p>
-              </div>
-            </div>
-          </div>
-        </section>
-
         {/* 2 Vibrant Emerald-Harmonized KPI Cards */}
         <section className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div className="rounded-2xl bg-gradient-to-br from-[#043927] to-[#065F46] p-5 text-white shadow-sm flex flex-col justify-between">
