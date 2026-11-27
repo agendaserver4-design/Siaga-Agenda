@@ -216,7 +216,7 @@ export function createInitialMasterUnits(): MasterUnitItem[] {
     { id: 'mu-3', tipe: 'Unit / Bidang', kode: 'BID-KL', nama: 'Bidang Kedaruratan & Logistik', keterangan: 'TRC, Pusdalops & Penanganan Darurat' },
     { id: 'mu-4', tipe: 'Unit / Bidang', kode: 'BID-RR', nama: 'Bidang Rehabilitasi & Rekonstruksi', keterangan: 'Pemulihan Infrastruktur & Sosial' },
     { id: 'mu-5', tipe: 'Unit / Bidang', kode: 'DAMKAR', nama: 'Bidang Damkarmat', keterangan: 'Pemadam Kebakaran & Penyelamatan' },
-    { id: 'mu-6', tipe: 'Lokasi / Ruangan', kode: 'LOC-01', nama: 'Ruang Rapat Pusdalops BPBD Sidoarjo', keterangan: 'Jl. Raya Kemiri No. 1, Sidoarjo' },
+    { id: 'mu-6', tipe: 'Lokasi / Ruangan', kode: 'LOC-01', nama: 'Ruang Rapat Pusdalops BPBD Sidoarjo', keterangan: 'Jl. Sultan Agung No. 19, Gajah Timur, Magersari, Sidoarjo' },
     { id: 'mu-7', tipe: 'Lokasi / Ruangan', kode: 'LOC-02', nama: 'Pendopo Delta Wibawa Kab. Sidoarjo', keterangan: 'Jl. Jenggolo No. 44A, Kec. Sidoarjo' },
     { id: 'mu-8', tipe: 'Lokasi / Ruangan', kode: 'LOC-03', nama: 'Ruang Rapat Setda Kab. Sidoarjo', keterangan: 'Kompleks Kantor Bupati Sidoarjo' },
     { id: 'mu-9', tipe: 'Lokasi / Ruangan', kode: 'LOC-04', nama: 'Daring (Zoom Meeting)', keterangan: 'Video Conference Resmi' },

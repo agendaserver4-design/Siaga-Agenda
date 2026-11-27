@@ -1573,7 +1573,7 @@ export default function App() {
 
             <div className="flex items-center gap-2 text-xs text-emerald-100/80 pt-1">
               <MapPin className="w-4 h-4 text-amber-300 shrink-0" />
-              <span>Jl. Raya Kemiri No. 1, Kec. Sidoarjo, Kabupaten Sidoarjo, Jawa Timur</span>
+              <span>Jl. Sultan Agung No. 19, Gajah Timur, Magersari, Kec. Sidoarjo, Kabupaten Sidoarjo, Jawa Timur 61212</span>
             </div>
           </section>
 
@@ -1589,9 +1589,6 @@ export default function App() {
                   <h2 className="text-xl font-extrabold text-slate-900 mt-1.5">
                     Portal Masuk SIAGA
                   </h2>
-                  <p className="text-xs text-slate-500 mt-0.5">
-                    Verifikasi langsung dengan tabel <code className="font-mono text-[11px]">akun_asn</code> di Supabase
-                  </p>
                 </div>
                 <div className="flex items-center gap-1.5 shrink-0">
                   <img

@@ -550,7 +550,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(8.5);
       doc.text(
-        'Jl. Raya Kemiri No. 1, Kec. Sidoarjo, Kabupaten Sidoarjo, Jawa Timur',
+        'Jl. Sultan Agung No. 19, Gajah Timur, Magersari, Kec. Sidoarjo, Kabupaten Sidoarjo, Jawa Timur 61212',
         centerX,
         31.5,
         { align: 'center' }
